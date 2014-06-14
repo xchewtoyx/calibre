@@ -5,11 +5,12 @@ import traceback, os, sys, functools, textwrap
 from functools import partial
 from threading import Thread
 
-from PyQt4.Qt import (QApplication, Qt, QIcon, QTimer, QByteArray, QSize,
-        QTime, QDoubleSpinBox, QLabel, QTextBrowser, QPropertyAnimation,
-        QPainter, QBrush, QColor, pyqtSignal, QUrl, QRegExpValidator, QRegExp,
-        QLineEdit, QToolButton, QMenu, QInputDialog, QAction, QKeySequence,
-        QModelIndex)
+from PyQt4.Qt import (
+    QApplication, Qt, QIcon, QTimer, QByteArray, QSize, QTime, QDoubleSpinBox,
+    QLabel, QPropertyAnimation, pyqtSignal, QUrl, QRegExpValidator, QRegExp,
+    QLineEdit, QToolButton, QMenu, QInputDialog, QAction, QModelIndex, QPalette,
+    QPainter, QBrush, QColor)
+from PyQt4.QtWebKit import QWebView
 
 from calibre.gui2.viewer.main_ui import Ui_EbookViewer
 from calibre.gui2.viewer.printing import Printing
@@ -17,14 +18,13 @@ from calibre.gui2.viewer.bookmarkmanager import BookmarkManager
 from calibre.gui2.viewer.toc import TOC
 from calibre.gui2.widgets import ProgressIndicator
 from calibre.gui2.main_window import MainWindow
-from calibre.gui2 import (Application, ORG_NAME, APP_UID, choose_files,
-    info_dialog, error_dialog, open_url, available_height)
+from calibre.gui2 import (Application, ORG_NAME, APP_UID, choose_files, rating_font,
+    info_dialog, error_dialog, open_url, available_height, setup_gui_option_parser, detach_gui)
 from calibre.ebooks.oeb.iterator.book import EbookIterator
 from calibre.ebooks import DRMError
 from calibre.constants import islinux, filesystem_encoding
 from calibre.utils.config import Config, StringConfig, JSONConfig
 from calibre.gui2.search_box import SearchBox2
-from calibre.ebooks.metadata import MetaInformation
 from calibre.customize.ui import available_input_formats
 from calibre.gui2.viewer.dictionary import Lookup
 from calibre import as_unicode, force_unicode, isbytestring
@@ -102,31 +102,44 @@ class History(list):
         self.forward_pos = None
         self.set_actions()
 
-class Metadata(QLabel):
+class Metadata(QWebView):
 
     def __init__(self, parent):
-        QTextBrowser.__init__(self, parent.centralWidget())
+        QWebView.__init__(self, parent.centralWidget())
+        s = self.settings()
+        s.setAttribute(s.JavascriptEnabled, False)
+        self.page().setLinkDelegationPolicy(self.page().DelegateAllLinks)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, False)
+        palette = self.palette()
+        palette.setBrush(QPalette.Base, Qt.transparent)
+        self.page().setPalette(palette)
+        self.css = P('templates/book_details.css', data=True).decode('utf-8')
+
         self.view = parent.splitter
         self.setGeometry(self.view.geometry())
-        self.setWordWrap(True)
         self.setVisible(False)
 
     def show_opf(self, opf, ext=''):
-        mi = MetaInformation(opf)
-        html = '<h2 align="center">%s</h2>%s\n<b>%s:</b> %s'\
-                %(_('Metadata'), u''.join(mi.to_html()),
-                        _('Book format'), ext.upper())
-        self.setText(html)
+        from calibre.gui2.book_details import render_html
+        from calibre.ebooks.metadata.book.render import mi_to_html
+
+        def render_data(mi, use_roman_numbers=True, all_fields=False):
+            return mi_to_html(mi, use_roman_numbers=use_roman_numbers, rating_font=rating_font())
+
+        mi = opf.to_book_metadata()
+        html = render_html(mi, self.css, True, self, render_data_func=render_data)
+        self.setHtml(html)
 
     def setVisible(self, x):
-        self.setGeometry(self.view.geometry())
-        QLabel.setVisible(self, x)
+        if x:
+            self.setGeometry(self.view.geometry())
+        QWebView.setVisible(self, x)
 
     def paintEvent(self, ev):
         p = QPainter(self)
         p.fillRect(ev.region().boundingRect(), QBrush(QColor(200, 200, 200, 220), Qt.SolidPattern))
         p.end()
-        QLabel.paintEvent(self, ev)
+        QWebView.paintEvent(self, ev)
 
 
 class DoubleSpinBox(QDoubleSpinBox):
@@ -234,18 +247,9 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
         self.view_resized_timer.timeout.connect(self.viewport_resize_finished)
         self.view_resized_timer.setSingleShot(True)
         self.resize_in_progress = False
-        qs = [Qt.CTRL+Qt.Key_Q,Qt.CTRL+Qt.Key_W]
-        self.action_quit.setShortcuts(qs)
         self.action_quit.triggered.connect(self.quit)
-        self.action_focus_search = QAction(self)
-        self.addAction(self.action_focus_search)
-        self.action_focus_search.setShortcuts([Qt.Key_Slash,
-            QKeySequence(QKeySequence.Find)])
-        self.action_focus_search.triggered.connect(lambda x:
-                self.search.setFocus(Qt.OtherFocusReason))
         self.action_copy.setDisabled(True)
         self.action_metadata.setCheckable(True)
-        self.action_metadata.setShortcut(Qt.CTRL+Qt.Key_I)
         self.action_table_of_contents.setCheckable(True)
         self.toc.setMinimumWidth(80)
         self.action_reference_mode.setCheckable(True)
@@ -255,18 +259,14 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
         self.action_copy.triggered[bool].connect(self.copy)
         self.action_font_size_larger.triggered.connect(self.font_size_larger)
         self.action_font_size_smaller.triggered.connect(self.font_size_smaller)
-        self.action_font_size_larger.setShortcut(Qt.CTRL+Qt.Key_Equal)
-        self.action_font_size_smaller.setShortcut(Qt.CTRL+Qt.Key_Minus)
         self.action_open_ebook.triggered[bool].connect(self.open_ebook)
         self.action_next_page.triggered.connect(self.view.next_page)
         self.action_previous_page.triggered.connect(self.view.previous_page)
         self.action_find_next.triggered.connect(self.find_next)
         self.action_find_previous.triggered.connect(self.find_previous)
         self.action_full_screen.triggered[bool].connect(self.toggle_fullscreen)
-        self.action_full_screen.setShortcuts([Qt.Key_F11, Qt.CTRL+Qt.SHIFT+Qt.Key_F])
-        self.action_full_screen.setToolTip(_('Toggle full screen (%s)') %
-                _(' or ').join([unicode(x.toString(x.NativeText)) for x in
-                    self.action_full_screen.shortcuts()]))
+        self.action_full_screen.setToolTip(_('Toggle full screen [%s]') %
+                _(' or ').join([x for x in self.view.shortcuts.get_shortcuts('Fullscreen')]))
         self.action_back.triggered[bool].connect(self.back)
         self.action_forward.triggered[bool].connect(self.forward)
         self.action_preferences.triggered.connect(self.do_config)
@@ -348,11 +348,6 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
         self.pos_label.setFocusPolicy(Qt.NoFocus)
         self.clock_timer = QTimer(self)
         self.clock_timer.timeout.connect(self.update_clock)
-        self.esc_full_screen_action = a = QAction(self)
-        self.addAction(a)
-        a.setShortcut(Qt.Key_Escape)
-        a.setEnabled(False)
-        a.triggered.connect(self.action_full_screen.trigger)
 
         self.print_menu = QMenu()
         self.print_menu.addAction(QIcon(I('print-preview.png')), _('Print Preview'))
@@ -360,9 +355,6 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
         self.tool_bar.widgetForAction(self.action_print).setPopupMode(QToolButton.MenuButtonPopup)
         self.action_print.triggered.connect(self.print_book)
         self.print_menu.actions()[0].triggered.connect(self.print_preview)
-        ca = self.view.copy_action
-        ca.setShortcut(QKeySequence.Copy)
-        self.addAction(ca)
         self.open_history_menu = QMenu()
         self.clear_recent_history_action = QAction(
                 _('Clear list of recently opened books'), self)
@@ -380,6 +372,8 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
                 # continue to function even when the toolbars are hidden
                 self.addAction(action)
 
+        for plugin in self.view.document.all_viewer_plugins:
+            plugin.customize_ui(self)
         self.view.document.settings_changed.connect(self.settings_changed)
 
         self.restore_state()
@@ -487,6 +481,11 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
                 at_start=True)
 
     def lookup(self, word):
+        from calibre.gui2.viewer.documentview import config
+        opts = config().parse()
+        settings = self.dictionary_view.page().settings()
+        settings.setFontSize(settings.DefaultFontSize, opts.default_font_size)
+        settings.setFontSize(settings.DefaultFixedFontSize, opts.mono_font_size)
         self.dictionary_view.setHtml('<html><body><p>'+
             _('Connecting to dict.org to lookup: <b>%s</b>&hellip;')%word +
             '</p></body></html>')
@@ -513,7 +512,7 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
         p = Printing(self.iterator, self)
         p.start_preview()
 
-    def toggle_fullscreen(self, x):
+    def toggle_fullscreen(self):
         if self.isFullScreen():
             self.showNormal()
         else:
@@ -539,7 +538,6 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
 
     def show_full_screen_label(self):
         f = self.full_screen_label
-        self.esc_full_screen_action.setEnabled(True)
         height = 200
         width = int(0.7*self.view.width())
         f.resize(width, height)
@@ -604,7 +602,6 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
         self.clock_timer.stop()
         self.vertical_scrollbar.setVisible(True)
         self.window_mode_changed = 'normal'
-        self.esc_full_screen_action.setEnabled(False)
         self.settings_changed()
         self.full_screen_label.setVisible(False)
         if hasattr(self, '_original_frame_margins'):
@@ -727,11 +724,11 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
 
     def magnification_changed(self, val):
         tt = '%(action)s [%(sc)s]\n'+_('Current magnification: %(mag).1f')
-        sc = unicode(self.action_font_size_larger.shortcut().toString())
+        sc = _(' or ').join(self.view.shortcuts.get_shortcuts('Font larger'))
         self.action_font_size_larger.setToolTip(
                 tt %dict(action=unicode(self.action_font_size_larger.text()),
                          mag=val, sc=sc))
-        sc = unicode(self.action_font_size_smaller.shortcut().toString())
+        sc = _(' or ').join(self.view.shortcuts.get_shortcuts('Font smaller'))
         self.action_font_size_smaller.setToolTip(
                 tt %dict(action=unicode(self.action_font_size_smaller.text()),
                          mag=val, sc=sc))
@@ -772,12 +769,14 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
             self.scrolled(self.view.scroll_fraction)
 
     def internal_link_clicked(self, frac):
+        self.update_page_number()  # Ensure page number is accurate as it is used for history
         self.history.add(self.pos.value())
 
     def link_clicked(self, url):
         path = os.path.abspath(unicode(url.toLocalFile()))
         frag = None
         if path in self.iterator.spine:
+            self.update_page_number()  # Ensure page number is accurate as it is used for history
             self.history.add(self.pos.value())
             path = self.iterator.spine[self.iterator.spine.index(path)]
             if url.hasFragment():
@@ -913,6 +912,14 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
         else:
             self.view.document.page_position.restore()
         self.view.document.after_resize()
+        # For some reason scroll_fraction returns incorrect results in paged
+        # mode for some time after a resize is finished. No way of knowing
+        # exactly how long, so we update it in a second, in the hopes that it
+        # will be enough *most* of the time.
+        QTimer.singleShot(1000, self.update_page_number)
+
+    def update_page_number(self):
+        self.set_page_number(self.view.document.scroll_fraction)
 
     def close_progress_indicator(self):
         self.pi.stop()
@@ -965,7 +972,8 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
 
     def set_bookmarks(self, bookmarks):
         self.bookmarks_menu.clear()
-        self.bookmarks_menu.addAction(_("Bookmark this location"), self.bookmark)
+        sc = _(' or ').join(self.view.shortcuts.get_shortcuts('Bookmark'))
+        self.bookmarks_menu.addAction(_("Bookmark this location [%s]") % sc, self.bookmark)
         self.bookmarks_menu.addAction(_("Manage Bookmarks"), self.manage_bookmarks)
         self.bookmarks_menu.addSeparator()
         current_page = None
@@ -1010,7 +1018,7 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
         self.iterator = EbookIterator(pathtoebook)
         self.open_progress_indicator(_('Loading ebook...'))
         worker = Worker(target=partial(self.iterator.__enter__,
-            extract_embedded_fonts_for_qt=True))
+            extract_embedded_fonts_for_qt=True, view_kepub=True))
         worker.start()
         while worker.isAlive():
             worker.join(0.1)
@@ -1106,10 +1114,45 @@ class EbookViewer(MainWindow, Ui_EbookViewer):
             self.load_path(self.iterator.spine[self.current_index-1], pos=1.0)
 
     def keyPressEvent(self, event):
-        MainWindow.keyPressEvent(self, event)
-        if not event.isAccepted():
-            if not self.view.handle_key_press(event):
-                event.ignore()
+        if event.key() == Qt.Key_Escape:
+            if self.metadata.isVisible():
+                self.metadata.setVisible(False)
+                event.accept()
+                return
+            if self.isFullScreen():
+                self.action_full_screen.trigger()
+                event.accept()
+                return
+        try:
+            key = self.view.shortcuts.get_match(event)
+        except AttributeError:
+            return MainWindow.keyPressEvent(self, event)
+        try:
+            bac = self.bookmarks_menu.actions()[0]
+        except (AttributeError, TypeError, IndexError, KeyError):
+            bac = None
+        action = {
+            'Quit':self.action_quit,
+            'Show metadata':self.action_metadata,
+            'Copy':self.view.copy_action,
+            'Font larger': self.action_font_size_larger,
+            'Font smaller': self.action_font_size_smaller,
+            'Fullscreen': self.action_full_screen,
+            'Find next': self.action_find_next,
+            'Find previous': self.action_find_previous,
+            'Search online': self.view.search_online_action,
+            'Lookup word': self.view.dictionary_action,
+            'Next occurrence': self.view.search_action,
+            'Bookmark': bac,
+        }.get(key, None)
+        if action is not None:
+            event.accept()
+            action.trigger()
+            return
+        if key == 'Focus Search':
+            self.search.setFocus(Qt.OtherFocusReason)
+        if not self.view.handle_key_press(event):
+            event.ignore()
 
     def __enter__(self):
         return self
@@ -1161,11 +1204,13 @@ def config(defaults=None):
 
 def option_parser():
     c = config()
-    return c.option_parser(usage=_('''\
+    parser = c.option_parser(usage=_('''\
 %prog [options] file
 
 View an ebook.
 '''))
+    setup_gui_option_parser(parser)
+    return parser
 
 
 def main(args=sys.argv):
@@ -1175,6 +1220,8 @@ def main(args=sys.argv):
 
     parser = option_parser()
     opts, args = parser.parse_args(args)
+    if getattr(opts, 'detach', False):
+        detach_gui()
     try:
         open_at = float(opts.open_at)
     except:

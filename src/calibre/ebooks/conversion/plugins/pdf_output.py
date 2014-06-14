@@ -22,20 +22,21 @@ PAPER_SIZES = [u'a0', u'a1', u'a2', u'a3', u'a4', u'a5', u'a6', u'b0', u'b1',
                u'b2', u'b3', u'b4', u'b5', u'b6', u'legal', u'letter']
 
 class PDFMetadata(object):  # {{{
-    def __init__(self, oeb_metadata=None):
+    def __init__(self, mi=None):
         from calibre import force_unicode
         from calibre.ebooks.metadata import authors_to_string
         self.title = _(u'Unknown')
         self.author = _(u'Unknown')
         self.tags = u''
+        self.mi = mi
 
-        if oeb_metadata is not None:
-            if len(oeb_metadata.title) >= 1:
-                self.title = oeb_metadata.title[0].value
-            if len(oeb_metadata.creator) >= 1:
-                self.author = authors_to_string([x.value for x in oeb_metadata.creator])
-            if oeb_metadata.subject:
-                self.tags = u', '.join(map(unicode, oeb_metadata.subject))
+        if mi is not None:
+            if mi.title:
+                self.title = mi.title
+            if mi.authors:
+                self.author = authors_to_string(mi.authors)
+            if mi.tags:
+                self.tags = u', '.join(mi.tags)
 
         self.title = force_unicode(self.title)
         self.author = force_unicode(self.author)
@@ -112,6 +113,9 @@ class PDFOutput(OutputFormatPlugin):
         OptionRecommendation(name='pdf_add_toc', recommended_value=False,
             help=_('Add a Table of Contents at the end of the PDF that lists page numbers. '
                    'Useful if you want to print out the PDF. If this PDF is intended for electronic use, use the PDF Outline instead.')),
+        OptionRecommendation(name='toc_title', recommended_value=None,
+            help=_('Title for generated table of contents.')
+        ),
         ])
 
     def convert(self, oeb_book, output_path, input_plugin, opts, log):
@@ -122,7 +126,15 @@ class PDFOutput(OutputFormatPlugin):
         self.oeb = oeb_book
         self.input_plugin, self.opts, self.log = input_plugin, opts, log
         self.output_path = output_path
-        self.metadata = oeb_book.metadata
+        from calibre.ebooks.oeb.base import OPF, OPF2_NS
+        from lxml import etree
+        from io import BytesIO
+        package = etree.Element(OPF('package'),
+            attrib={'version': '2.0', 'unique-identifier': 'dummy'},
+            nsmap={None: OPF2_NS})
+        from calibre.ebooks.metadata.opf2 import OPF
+        self.oeb.metadata.to_opf2(package)
+        self.metadata = OPF(BytesIO(etree.tostring(package))).to_book_metadata()
         self.cover_data = None
 
         if input_plugin.is_image_collection:
@@ -285,5 +297,49 @@ class PDFOutput(OutputFormatPlugin):
         if close:
             out_stream.close()
 
+    def specialize_css_for_output(self, log, opts, item, stylizer):
+        ''' Qt WebKit (4.8.x) cannot handle font-variant: small-caps. It tries to fake the small caps,
+        which is ok, but the faking continues on to subsequent text that should not be in small-caps.
+        So we workaround the problem by faking small caps ourselves. A minimal example that Qt chokes on:
+        <html><body>
+        <p style="font-variant:small-caps">Some Small-caps Text</p>
+        <p style="text-align:justify">Some non small-caps text with enough text for at least one
+        full line and justification enabled. Both of these are needed for the example to work.</p>
+        </body></html> '''
+        from calibre.ebooks.oeb.base import XHTML
+        import itertools, string
+        if not hasattr(item.data, 'xpath'):
+            return
+        ws = unicode(string.whitespace)
 
+        def fake_small_caps(elem):
+            spans = []
+            for lowercase, textiter in itertools.groupby(elem.text, lambda x:x not in ws and icu_lower(x)==x):
+                text = ''.join(textiter)
+                if lowercase:
+                    text = icu_upper(text)
+                span = elem.makeelement(XHTML('span'))
+                span.text = text
+                style = stylizer.style(span)
+                if lowercase:
+                    style.set('font-size', '0.65em')
+                spans.append(span)
+            elem.text = None
+            elem[0:] = spans
+
+        def process_elem(elem, parent_fv=None):
+            children = tuple(elem)
+            style = stylizer.style(elem)
+            fv = style.drop('font-variant')
+            if not fv or fv.lower() == 'inherit':
+                fv = parent_fv
+            if fv and fv.lower() in {'smallcaps', 'small-caps'}:
+                if elem.text:
+                    fake_small_caps(elem)
+            for child in children:
+                if hasattr(getattr(child, 'tag', None), 'lower'):
+                    process_elem(child, parent_fv=fv)
+
+        for body in item.data.xpath('//*[local-name()="body"]'):
+            process_elem(body)
 

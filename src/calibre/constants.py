@@ -4,7 +4,7 @@ __license__   = 'GPL v3'
 __copyright__ = '2008, Kovid Goyal kovid@kovidgoyal.net'
 __docformat__ = 'restructuredtext en'
 __appname__   = u'calibre'
-numeric_version = (0, 9, 35)
+numeric_version = (1, 40, 0)
 __version__   = u'.'.join(map(unicode, numeric_version))
 __author__    = u"Kovid Goyal <kovid@kovidgoyal.net>"
 
@@ -52,7 +52,10 @@ def get_osx_version():
         from collections import namedtuple
         OSX = namedtuple('OSX', 'major minor tertiary')
         try:
-            _osx_ver = OSX(*(map(int, platform.mac_ver()[0].split('.'))))
+            ver = platform.mac_ver()[0].split('.')
+            if len(ver) == 2:
+                ver.append(0)
+            _osx_ver = OSX(*(map(int, ver)))
         except:
             _osx_ver = OSX(0, 0, 0)
     return _osx_ver
@@ -136,6 +139,12 @@ class Plugins(collections.Mapping):
                 'woff',
                 'unrar',
                 'qt_hack',
+                '_regex',
+                'hunspell',
+                '_patiencediff_c',
+                'bzzdec',
+                'matcher',
+                'tokenizer',
             ]
         if iswindows:
             plugins.extend(['winutil', 'wpd', 'winfonts'])
@@ -217,9 +226,11 @@ else:
 # }}}
 
 def get_version():
-    '''Return version string that indicates if we are running in a dev env'''
+    '''Return version string for display to user '''
     dv = os.environ.get('CALIBRE_DEVELOP_FROM', None)
     v = __version__
+    if numeric_version[-1] == 0:
+        v = v[:-2]
     if getattr(sys, 'frozen', False) and dv and os.path.abspath(dv) in sys.path:
         v += '*'
     if iswindows and is64bit:
@@ -275,10 +286,15 @@ def get_windows_temp_path():
 def get_windows_user_locale_name():
     import ctypes
     k32 = ctypes.windll.kernel32
-    n = 200
+    n = 255
     buf = ctypes.create_unicode_buffer(u'\0'*n)
     n = k32.GetUserDefaultLocaleName(buf, n)
     if n == 0:
         return None
     return u'_'.join(buf.value.split(u'-')[:2])
+
+def is_modern_webkit():
+    # Check if we are using QtWebKit >= 2.3
+    from PyQt4.QtWebKit import qWebKitMajorVersion
+    return qWebKitMajorVersion() >= 537
 

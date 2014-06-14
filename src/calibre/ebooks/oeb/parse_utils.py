@@ -80,12 +80,22 @@ def node_depth(node):
         p = p.getparent()
     return ans
 
-def html5_parse(data, max_nesting_depth=100):
-    import html5lib
-    # html5lib bug: http://code.google.com/p/html5lib/issues/detail?id=195
-    data = re.sub(r'<\s*title\s*[^>]*/\s*>', '<title></title>', data)
+def fix_self_closing_cdata_tags(data):
+    from html5lib.constants import cdataElements, rcdataElements
+    return re.sub(r'<\s*(%s)\s*[^>]*/\s*>' % ('|'.join(cdataElements|rcdataElements)), r'<\1></\1>', data, flags=re.I)
 
-    data = html5lib.parse(data, treebuilder='lxml').getroot()
+def html5_parse(data, max_nesting_depth=100):
+    import html5lib, warnings
+    # HTML5 parsing algorithm idiocy: http://code.google.com/p/html5lib/issues/detail?id=195
+    data = fix_self_closing_cdata_tags(data)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        try:
+            data = html5lib.parse(data, treebuilder='lxml').getroot()
+        except ValueError:
+            from calibre.utils.cleantext import clean_xml_chars
+            data = html5lib.parse(clean_xml_chars(data), treebuilder='lxml').getroot()
 
     # Check that the asinine HTML 5 algorithm did not result in a tree with
     # insane nesting depths
@@ -95,10 +105,6 @@ def html5_parse(data, max_nesting_depth=100):
             if depth > max_nesting_depth:
                 raise ValueError('html5lib resulted in a tree with nesting'
                         ' depth > %d'%max_nesting_depth)
-    # Set lang correctly
-    xl = data.attrib.pop('xmlU0003Alang', None)
-    if xl is not None and 'lang' not in data.attrib:
-        data.attrib['lang'] = xl
 
     # html5lib has the most inelegant handling of namespaces I have ever seen
     # Try to reconstitute destroyed namespace info
@@ -107,6 +113,10 @@ def html5_parse(data, max_nesting_depth=100):
     seen_namespaces = set()
     for elem in tuple(data.iter(tag=etree.Element)):
         elem.attrib.pop('xmlns', None)
+        # Set lang correctly
+        xl = elem.attrib.pop('xmlU0003Alang', None)
+        if xl is not None and 'lang' not in elem.attrib:
+            elem.attrib['lang'] = xl
         namespaces = {}
         for x in tuple(elem.attrib):
             if x.startswith('xmlnsU') or x.startswith(xmlns_declaration):
@@ -116,6 +126,7 @@ def html5_parse(data, max_nesting_depth=100):
                     prefix = x[11:]
                     namespaces[prefix] = val
 
+        remapped_namespaces = {}
         if namespaces:
             # Some destroyed namespace declarations were found
             p = elem.getparent()
@@ -127,6 +138,7 @@ def html5_parse(data, max_nesting_depth=100):
                 p.remove(elem)
                 elem = clone_element(elem, nsmap=namespaces)
                 p.insert(idx, elem)
+                remapped_namespaces = {ns:namespaces[ns] for ns in set(namespaces) - set(elem.nsmap)}
 
         b = barename(elem.tag)
         idx = b.find('U0003A')
@@ -135,6 +147,8 @@ def html5_parse(data, max_nesting_depth=100):
             ns = elem.nsmap.get(prefix, None)
             if ns is None:
                 ns = non_html5_namespaces.get(prefix, None)
+            if ns is None:
+                ns = remapped_namespaces.get(prefix, None)
             if ns is not None:
                 elem.tag = '{%s}%s'%(ns, tag)
 
@@ -145,6 +159,8 @@ def html5_parse(data, max_nesting_depth=100):
                 ns = elem.nsmap.get(prefix, None)
                 if ns is None:
                     ns = non_html5_namespaces.get(prefix, None)
+                if ns is None:
+                    ns = remapped_namespaces.get(prefix, None)
                 if ns is not None:
                     elem.attrib['{%s}%s'%(ns, tag)] = elem.attrib.pop(b)
 
@@ -200,6 +216,14 @@ def clean_word_doc(data, log):
         data = pat.sub('', data)
     return data
 
+class HTML5Doc(ValueError):
+    pass
+
+def check_for_html5(prefix, root):
+    if re.search(r'<!DOCTYPE\s+html\s*>', prefix, re.IGNORECASE) is not None:
+        if root.xpath('//svg'):
+            raise HTML5Doc('This document appears to be un-namespaced HTML 5, should be parsed by the HTML 5 parser')
+
 def parse_html(data, log=None, decoder=None, preprocessor=None,
         filename='<string>', non_html_file_tags=frozenset()):
     if log is None:
@@ -224,6 +248,7 @@ def parse_html(data, log=None, decoder=None, preprocessor=None,
     # Remove DOCTYPE declaration as it messes up parsing
     # In particular, it causes tostring to insert xmlns
     # declarations, which messes up the coercing logic
+    pre = ''
     idx = data.find('<html')
     if idx == -1:
         idx = data.find('<HTML')
@@ -241,7 +266,7 @@ def parse_html(data, log=None, decoder=None, preprocessor=None,
                 pat = re.compile(r'&(%s);'%('|'.join(user_entities.keys())))
                 data = pat.sub(lambda m:user_entities[m.group(1)], data)
 
-    data = clean_word_doc(data, log)
+    data = raw = clean_word_doc(data, log)
 
     # Setting huge_tree=True causes crashes in windows with large files
     parser = etree.XMLParser(no_network=True)
@@ -249,14 +274,17 @@ def parse_html(data, log=None, decoder=None, preprocessor=None,
     # Try with more & more drastic measures to parse
     try:
         data = etree.fromstring(data, parser=parser)
-    except etree.XMLSyntaxError:
+        check_for_html5(pre, data)
+    except (HTML5Doc, etree.XMLSyntaxError):
         log.debug('Initial parse failed, using more'
                 ' forgiving parsers')
-        data = xml_replace_entities(data)
+        raw = data = xml_replace_entities(raw)
         try:
             data = etree.fromstring(data, parser=parser)
-        except etree.XMLSyntaxError:
+            check_for_html5(pre, data)
+        except (HTML5Doc, etree.XMLSyntaxError):
             log.debug('Parsing %s as HTML' % filename)
+            data = raw
             try:
                 data = html5_parse(data)
             except:
@@ -399,7 +427,7 @@ def parse_html(data, log=None, decoder=None, preprocessor=None,
         idx = p.index(a) -1
         p.remove(a)
         if a.tail:
-            if idx <= 0:
+            if idx < 0:
                 if p.text is None:
                     p.text = ''
                 p.text += a.tail

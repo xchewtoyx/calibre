@@ -20,6 +20,14 @@ from calibre.gui2.dialogs.duplicates import DuplicatesQuestion
 
 AUTO_ADDED = frozenset(BOOK_EXTENSIONS) - {'pdr', 'mbp', 'tan'}
 
+class AllAllowed(object):
+
+    def __init__(self):
+        self.disallowed = frozenset(gprefs['blocked_auto_formats'])
+
+    def __contains__(self, x):
+        return x not in self.disallowed
+
 class Worker(Thread):
 
     def __init__(self, path, callback):
@@ -29,7 +37,10 @@ class Worker(Thread):
         self.wake_up = Event()
         self.path, self.callback = path, callback
         self.staging = set()
-        self.allowed = AUTO_ADDED - frozenset(gprefs['blocked_auto_formats'])
+        if gprefs['auto_add_everything']:
+            self.allowed = AllAllowed()
+        else:
+            self.allowed = AUTO_ADDED - frozenset(gprefs['blocked_auto_formats'])
 
     def run(self):
         self.tdir = PersistentTemporaryDirectory('_auto_adder')
@@ -210,7 +221,8 @@ class AutoAdder(QObject):
                 os.remove(paths[0])
                 self.worker.staging.remove(fname)
             except:
-                pass
+                import traceback
+                traceback.print_exc()
             count += num
 
         if duplicates:
@@ -219,7 +231,7 @@ class AutoAdder(QObject):
                 paths.extend(p)
                 formats.extend(f)
                 metadata.extend(mis)
-            dups = [(mi, mi.cover, [p]) for mi, p in zip(metadata, paths)]
+            dups = [(mic, mic.cover, [p]) for mic, p in zip(metadata, paths)]
             d = DuplicatesQuestion(m.db, dups, parent=gui)
             dups = tuple(d.duplicates)
             if dups:

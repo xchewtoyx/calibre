@@ -15,6 +15,8 @@ import os, time, re
 from contextlib import closing
 from datetime import date
 
+from calibre import fsync
+from calibre.devices.mime import mime_type_ext
 from calibre.devices.errors import DeviceError
 from calibre.devices.usbms.driver import USBMS, debug_print
 from calibre.devices.usbms.device import USBDevice
@@ -39,8 +41,7 @@ class PRST1(USBMS):
     path_sep = '/'
     booklist_class = CollectionsBookList
 
-    FORMATS      = ['epub', 'pdf', 'txt', 'book', 'zbf']  # The last two are
-                                                          # used in japan
+    FORMATS      = ['epub', 'pdf', 'txt', 'book', 'zbf']  # The last two are used in japan
     CAN_SET_METADATA = ['collections']
     CAN_DO_DEVICE_DB_PLUGBOARD = True
 
@@ -50,10 +51,10 @@ class PRST1(USBMS):
 
     VENDOR_NAME        = 'SONY'
     WINDOWS_MAIN_MEM   = re.compile(
-            r'(PRS-T(1|2|2N)&)'
+            r'(PRS-T(1|2|2N|3)&)'
             )
     WINDOWS_CARD_A_MEM = re.compile(
-            r'(PRS-T(1|2|2N)__SD&)'
+            r'(PRS-T(1|2|2N|3)_{1,2}SD&)'
             )
     MAIN_MEMORY_VOLUME_LABEL = 'SONY Reader Main Memory'
     STORAGE_CARD_VOLUME_LABEL = 'SONY Reader Storage Card'
@@ -66,31 +67,31 @@ class PRST1(USBMS):
 
     EXTRA_CUSTOMIZATION_MESSAGE = [
         _('Comma separated list of metadata fields '
-            'to turn into collections on the device. Possibilities include: ')+
-                    'series, tags, authors',
+        'to turn into collections on the device. Possibilities include: ')+
+        'series, tags, authors',
         _('Upload separate cover thumbnails for books') +
-             ':::'+_('Normally, the SONY readers get the cover image from the'
-             ' ebook file itself. With this option, calibre will send a '
-             'separate cover image to the reader, useful if you are '
-             'sending DRMed books in which you cannot change the cover.'),
+        ':::'+_('Normally, the SONY readers get the cover image from the'
+                ' ebook file itself. With this option, calibre will send a '
+                'separate cover image to the reader, useful if you are '
+                'sending DRMed books in which you cannot change the cover.'),
         _('Refresh separate covers when using automatic management') +
-             ':::' +
-              _('Set this option to have separate book covers uploaded '
-                'every time you connect your device. Unset this option if '
-                'you have so many books on the reader that performance is '
-                'unacceptable.'),
+        ':::' +
+        _('Set this option to have separate book covers uploaded '
+          'every time you connect your device. Unset this option if '
+          'you have so many books on the reader that performance is '
+          'unacceptable.'),
         _('Preserve cover aspect ratio when building thumbnails') +
-              ':::' +
-              _('Set this option if you want the cover thumbnails to have '
-                'the same aspect ratio (width to height) as the cover. '
-                'Unset it if you want the thumbnail to be the maximum size, '
-                'ignoring aspect ratio.'),
+        ':::' +
+        _('Set this option if you want the cover thumbnails to have '
+          'the same aspect ratio (width to height) as the cover. '
+          'Unset it if you want the thumbnail to be the maximum size, '
+          'ignoring aspect ratio.'),
         _('Use SONY Author Format (First Author Only)') +
-              ':::' +
-              _('Set this option if you want the author on the Sony to '
-                'appear the same way the T1 sets it. This means it will '
-                'only show the first author for books with multiple authors. '
-                'Leave this disabled if you use Metadata Plugboards.')
+        ':::' +
+        _('Set this option if you want the author on the Sony to '
+          'appear the same way the T1 sets it. This means it will '
+          'only show the first author for books with multiple authors. '
+          'Leave this disabled if you use Metadata Plugboards.')
     ]
     EXTRA_CUSTOMIZATION_DEFAULT = [
                 ', '.join(['series', 'tags']),
@@ -435,6 +436,7 @@ class PRST1(USBMS):
 
     def update_device_books(self, connection, booklist, source_id, plugboard,
             dbpath):
+        from calibre.ebooks.metadata.meta import path_to_ext
         opts = self.settings()
         upload_covers = opts.extra_customization[self.OPT_UPLOAD_COVERS]
         refresh_covers = opts.extra_customization[self.OPT_REFRESH_COVERS]
@@ -484,7 +486,7 @@ class PRST1(USBMS):
                 '''
                 t = (title, author, source_id, int(time.time() * 1000),
                         modified_date, lpath,
-                        os.path.basename(lpath), book.size, book.mime)
+                        os.path.basename(lpath), book.size, book.mime or mime_type_ext(path_to_ext(lpath)))
                 cursor.execute(query, t)
                 book.bookId = self.get_lastrowid(cursor)
                 if upload_covers:
@@ -761,6 +763,7 @@ class PRST1(USBMS):
 
         with open(thumbnail_file_path, 'wb') as f:
             f.write(book.thumbnail[-1])
+            fsync(f)
 
         query = 'UPDATE books SET thumbnail = ? WHERE _id = ?'
         t = (thumbnail_path, book.bookId,)
@@ -774,7 +777,7 @@ class PRST1(USBMS):
             return False
         if not book.lpath.lower().endswith('.epub'):
             return False
-        if book.pubdate.date() < date(2010, 10, 17):
+        if book.pubdate is None or book.pubdate.date() < date(2010, 10, 17):
             return False
         return True
 

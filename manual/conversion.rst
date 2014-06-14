@@ -5,26 +5,28 @@
 Ebook Conversion
 ===================
 
-|app| has a conversion system that is designed to be very easy to use. Normally, you just
-add a book to |app|, click convert and |app| will try hard to generate output that is as
-close as possible to the input. However, |app| accepts a very large number of input formats,
-not all of which are as suitable as others for conversion to ebooks. In the case of
-such input formats, or if you just want greater control over the conversion system,
-|app| has a lot of options to fine tune the conversion process. Note however that |app|'s
-conversion system is not a substitute for a full blown ebook editor. To edit ebooks, I
-would recommend first converting them to EPUB using |app| and then using a dedicated EPUB editor,
-like `Sigil <http://code.google.com/p/sigil/>`_ to get the book into perfect shape. You can then
-use the edited EPUB as input for conversion into other formats in |app|.
+|app| has a conversion system that is designed to be very easy to use.
+Normally, you just add a book to |app|, click convert and |app| will try hard
+to generate output that is as close as possible to the input. However, |app|
+accepts a very large number of input formats, not all of which are as suitable
+as others for conversion to ebooks. In the case of such input formats, or if
+you just want greater control over the conversion system, |app| has a lot of
+options to fine tune the conversion process. Note however that |app|'s
+conversion system is not a substitute for a full blown ebook editor. To edit
+ebooks, I recommend first converting them to EPUB or AZW3 using |app| and
+then using the Edit Book feature to get them into perfect shape. You can then
+use the edited ebook as input for conversion into other formats in |app|.
 
-This document will refer mainly to the conversion settings as found in the conversion dialog,
-pictured below. All these settings are also available via command line interface to conversion,
-documented at :ref:`ebook-convert`. In |app|, you can obtain help on any individual setting by holding your
-mouse over it, a tooltip will appear describing the setting.
+This document will refer mainly to the conversion settings as found in the
+conversion dialog, pictured below. All these settings are also available via
+command line interface to conversion, documented at :ref:`ebook-convert`. In
+|app|, you can obtain help on any individual setting by holding your mouse over
+it, a tooltip will appear describing the setting.
 
 .. image:: images/conv_dialog.png
     :align: center
     :alt: Ebook conversion dialog
-    :scale: 50 
+    :class: half-width-img
 
 .. contents:: Contents
   :depth: 1
@@ -323,7 +325,7 @@ remove all non-breaking-space entities, or may include false positive matches re
     tags, i.e. horizontal rules, and <img> tags are exceptions.  Horizontal rules can optionally be specified with styles, if you 
     choose to add your own style be sure to include the 'width' setting, otherwise the style information will be discarded.  Image 
     tags can used, but |app| does not provide the ability to add the image during conversion, this must be done after the fact using 
-    the 'Tweak Book' feature, or Sigil.
+    the 'Edit Book' feature.
         
         Example image tag (place the image within an 'Images' folder inside the epub after conversion):
             <img style="width:10%" src="../Images/scenebreak.png" />
@@ -534,28 +536,65 @@ Use the following HTML markup to achieve this
 
 Set the :guilabel:`Level 1 TOC` setting to ``//h:h2``. Then, for chapter two, |app| will take the title from the value of the ``title`` attribute on the ``<h2>`` tag, since the tag has no text.
 
+Using tag attributes to supply the text for entries in the Table of Contents
+-----------------------------------------------------------------------------
+
+If you have particularly long chapter titles and want shortened versions in the
+Table of Contents, you can use the title attribute to achieve this, for
+example:
+
+.. code-block:: html
+
+    <html>
+        <body>
+            <h2 title="Chapter 1">Chapter 1: Some very long title</h2>
+            <p>chapter 1 text...</p>
+            <h2 title="Chapter 2">Chapter 2: Some other very long title</h2>
+            <p>chapter 2 text...</p>
+        </body>
+    </html>
+
+Set the :guilabel:`Level 1 TOC` setting to ``//h:h2/@title``. Then |app| will
+take the title from the value of the ``title`` attribute on the ``<h2>`` tags,
+instead of using the text inside the tag. Note the trailing ``/@title`` on the
+XPath expression, you can use this form to tell |app| to get the text from any
+attribute you like. 
+
 How options are set/saved for Conversion
 -------------------------------------------
 
-There are two places where conversion options can be set in |app|. The first is in Preferences->Conversion. These
-settings are the defaults for the conversion options. Whenever you try to convert a new book, the settings set here
-will be used by default.
+There are two places where conversion options can be set in |app|. The first is
+in Preferences->Conversion. These settings are the defaults for the conversion
+options. Whenever you try to convert a new book, the settings set here will be
+used by default.
 
-You can also change settings in the conversion dialog for each book conversion. When you convert a book, |app| remembers the
-settings you used for that book, so that if you convert it again, the saved settings for the individual book will take
-precedence over the defaults set in Preferences. You can restore the individual settings to defaults by using the Restore to defaults
-button in the individual book conversion dialog.
+You can also change settings in the conversion dialog for each book conversion.
+When you convert a book, |app| remembers the settings you used for that book,
+so that if you convert it again, the saved settings for the individual book
+will take precedence over the defaults set in Preferences. You can restore the
+individual settings to defaults by using the Restore to defaults button in the
+individual book conversion dialog. You can remove the saved settings for a
+group of books by selecting all the books and then clicking the edit metadata
+button to bring up the bulk metadata edit dialog, near the bottom of the dialog
+is an option to remove stored conversion settings.
 
-When you Bulk Convert a set of books, settings are taken in the following order:
+When you Bulk Convert a set of books, settings are taken in the following order (last one wins):
 
-    * From the defaults set in Preferences->Conversion
-    * From the saved conversion settings for each book being converted (if any). This can be turned off by the option in the top left corner of the Bulk Conversion dialog.
+    * From the defaults set in Preferences->Conversion 
+
+    * From the saved conversion settings for each book being converted (if
+      any). This can be turned off by the option in the top left corner of the
+      Bulk Conversion dialog.  
+
     * From the settings set in the Bulk conversion dialog
 
-Note that the final settings for each book in a Bulk Conversion will be saved and re-used if the book is converted again. Since the
-highest priority in Bulk Conversion is given to the settings in the Bulk Conversion dialog, these will override any book specific
-settings. So you should only bulk convert books together that need similar settings. The exceptions are metadata and input format specific 
-settings. Since the Bulk Conversion dialog does not have settings for these two categories, they will be taken from book specific
+Note that the final settings for each book in a Bulk Conversion will be saved
+and re-used if the book is converted again. Since the highest priority in Bulk
+Conversion is given to the settings in the Bulk Conversion dialog, these will
+override any book specific settings. So you should only bulk convert books
+together that need similar settings. The exceptions are metadata and input
+format specific settings. Since the Bulk Conversion dialog does not have
+settings for these two categories, they will be taken from book specific
 settings (if any) or the defaults. 
 
 .. note::
@@ -772,9 +811,11 @@ size. By default, |app| uses a page size defined by the current
 :guilabel:`Output profile`. So if your output profile is set to Kindle, |app|
 will create a PDF with page size suitable for viewing on the small kindle
 screen. However, if you view this PDF file on a computer screen, then it will
-appear to have too large fonts. To create "normal" sized PDFs, use the override
-page size option under :guilabel:`PDF Output` in the conversion dialog.
+appear to have too large fonts. To create "normal" sized PDFs, use the
+:guilabel:`Override page size` option under :guilabel:`PDF Output` in the conversion dialog.
 
+Headers and Footers
+^^^^^^^^^^^^^^^^^^^^
 You can insert arbitrary headers and footers on each page of the PDF by
 specifying header and footer templates. Templates are just snippets of HTML
 code that get rendered in the header and footer locations. For example, to
@@ -799,7 +840,7 @@ template::
 This will display the title at the left and the author at the right, in a font
 size smaller than the main text.
 
-Finally, you can also use the current section in templates, as shown below::
+You can also use the current section in templates, as shown below::
 
     <p style="text-align:right">_SECTION_</p>
 
@@ -809,9 +850,18 @@ Outline). If the document has no table of contents then it will be replaced by
 empty text. If a single PDF page has multiple sections, the first section on
 the page will be used.
 
+You can even use javascript inside the header and footer templates, for
+example, the following template will cause page numbers to start at 4 instead
+of 1::
+
+    <p id="pagenum" style="text-align:center;"></p><script>document.getElementById("pagenum").innerHTML = "" + (_PAGENUM_ + 3)</script>
+
 .. note:: When adding headers and footers make sure you set the page top and
     bottom margins to large enough values, under the Page Setup section of the
     conversion dialog.
+
+Printable Table of Contents
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 You can also insert a printable Table of Contents at the end of the PDF that
 lists the page numbers for every section. This is very useful if you intend to

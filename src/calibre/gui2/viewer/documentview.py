@@ -8,10 +8,9 @@ import os, math, json
 from base64 import b64encode
 from functools import partial
 
-from PyQt4.Qt import (QSize, QSizePolicy, QUrl, SIGNAL, Qt, pyqtProperty,
+from PyQt4.Qt import (QSize, QSizePolicy, QUrl, Qt, pyqtProperty,
         QPainter, QPalette, QBrush, QDialog, QColor, QPoint, QImage, QRegion,
-        QIcon, pyqtSignature, QAction, QMenu, QString, pyqtSignal,
-        QSwipeGesture, QApplication, pyqtSlot)
+        QIcon, QAction, QMenu, QString, pyqtSignal, QApplication, pyqtSlot)
 from PyQt4.QtWebKit import QWebPage, QWebView, QWebSettings, QWebElement
 
 from calibre.gui2.viewer.flip import SlideFlip
@@ -25,27 +24,34 @@ from calibre.gui2.viewer.position import PagePosition
 from calibre.gui2.viewer.config import config, ConfigDialog, load_themes
 from calibre.gui2.viewer.image_popup import ImagePopup
 from calibre.gui2.viewer.table_popup import TablePopup
+from calibre.gui2.viewer.inspector import WebInspector
+from calibre.gui2.viewer.gestures import GestureHandler
 from calibre.ebooks.oeb.display.webview import load_html
-from calibre.constants import isxp, iswindows
+from calibre.constants import isxp, iswindows, DEBUG
 # }}}
+
+def apply_settings(settings, opts):
+    settings.setFontSize(QWebSettings.DefaultFontSize, opts.default_font_size)
+    settings.setFontSize(QWebSettings.DefaultFixedFontSize, opts.mono_font_size)
+    settings.setFontSize(QWebSettings.MinimumLogicalFontSize, opts.minimum_font_size)
+    settings.setFontSize(QWebSettings.MinimumFontSize, opts.minimum_font_size)
+    settings.setFontFamily(QWebSettings.StandardFont, {'serif':opts.serif_family, 'sans':opts.sans_family, 'mono':opts.mono_family}[opts.standard_font])
+    settings.setFontFamily(QWebSettings.SerifFont, opts.serif_family)
+    settings.setFontFamily(QWebSettings.SansSerifFont, opts.sans_family)
+    settings.setFontFamily(QWebSettings.FixedFont, opts.mono_family)
+    settings.setAttribute(QWebSettings.ZoomTextOnly, True)
+
 
 class Document(QWebPage):  # {{{
 
     page_turn = pyqtSignal(object)
     mark_element = pyqtSignal(QWebElement)
     settings_changed = pyqtSignal()
+    animated_scroll_done_signal = pyqtSignal()
 
     def set_font_settings(self, opts):
         settings = self.settings()
-        settings.setFontSize(QWebSettings.DefaultFontSize, opts.default_font_size)
-        settings.setFontSize(QWebSettings.DefaultFixedFontSize, opts.mono_font_size)
-        settings.setFontSize(QWebSettings.MinimumLogicalFontSize, opts.minimum_font_size)
-        settings.setFontSize(QWebSettings.MinimumFontSize, opts.minimum_font_size)
-        settings.setFontFamily(QWebSettings.StandardFont, {'serif':opts.serif_family, 'sans':opts.sans_family, 'mono':opts.mono_family}[opts.standard_font])
-        settings.setFontFamily(QWebSettings.SerifFont, opts.serif_family)
-        settings.setFontFamily(QWebSettings.SansSerifFont, opts.sans_family)
-        settings.setFontFamily(QWebSettings.FixedFont, opts.mono_family)
-        settings.setAttribute(QWebSettings.ZoomTextOnly, True)
+        apply_settings(settings, opts)
 
     def do_config(self, parent=None):
         d = ConfigDialog(self.shortcuts, parent)
@@ -121,8 +127,7 @@ class Document(QWebPage):  # {{{
         mf.setScrollBarPolicy(Qt.Horizontal, Qt.ScrollBarAlwaysOff)
 
     def set_user_stylesheet(self, opts):
-        bg = opts.background_color or 'white'
-        brules = ['background-color: %s !important'%bg]
+        brules = ['background-color: %s !important'%opts.background_color] if opts.background_color else ['background-color: white']
         prefix = '''
             body { %s  }
         '''%('; '.join(brules))
@@ -133,6 +138,15 @@ class Document(QWebPage):  # {{{
         data = 'data:text/css;charset=utf-8;base64,'
         data += b64encode(raw.encode('utf-8'))
         self.settings().setUserStyleSheetUrl(QUrl(data))
+
+    def findText(self, q, flags):
+        if self.hyphenatable:
+            q = unicode(q)
+            hyphenated_q = self.javascript(
+                'hyphenate_text(%s, "%s")' % (json.dumps(q, ensure_ascii=False), self.loaded_lang), typ='string')
+            if QWebPage.findText(self, hyphenated_q, flags):
+                return True
+        return QWebPage.findText(self, q, flags)
 
     def misc_config(self, opts):
         self.hyphenate = opts.hyphenate
@@ -146,6 +160,7 @@ class Document(QWebPage):  # {{{
         screen_width = QApplication.desktop().screenGeometry().width()
         # Leave some space for the scrollbar and some border
         self.max_fs_width = min(opts.max_fs_width, screen_width-50)
+        self.max_fs_height = opts.max_fs_height
         self.fullscreen_clock = opts.fullscreen_clock
         self.fullscreen_scrollbar = opts.fullscreen_scrollbar
         self.fullscreen_pos = opts.fullscreen_pos
@@ -189,14 +204,18 @@ class Document(QWebPage):  # {{{
             pl.load_javascript(evaljs)
         evaljs('py_bridge.mark_element.connect(window.calibre_extract.mark)')
 
-    @pyqtSignature("")
+    @pyqtSlot()
     def animated_scroll_done(self):
-        self.emit(SIGNAL('animated_scroll_done()'))
+        self.animated_scroll_done_signal.emit()
 
-    @pyqtSignature("")
-    def init_hyphenate(self):
+    @property
+    def hyphenatable(self):
         # Qt fails to render soft hyphens correctly on windows xp
-        if not isxp and self.hyphenate and getattr(self, 'loaded_lang', ''):
+        return not isxp and self.hyphenate and getattr(self, 'loaded_lang', '')
+
+    @pyqtSlot()
+    def init_hyphenate(self):
+        if self.hyphenatable:
             self.javascript('do_hyphenation("%s")'%self.loaded_lang)
 
     @pyqtSlot(int)
@@ -262,11 +281,16 @@ class Document(QWebPage):  # {{{
             ))
         force_fullscreen_layout = bool(getattr(last_loaded_path,
                                                'is_single_page', False))
-        f = 'true' if force_fullscreen_layout else 'false'
-        side_margin = self.javascript('window.paged_display.layout(%s)'%f, typ=int)
+        self.update_contents_size_for_paged_mode(force_fullscreen_layout)
+
+    def update_contents_size_for_paged_mode(self, force_fullscreen_layout=None):
         # Setup the contents size to ensure that there is a right most margin.
         # Without this WebKit renders the final column with no margin, as the
         # columns extend beyond the boundaries (and margin) of body
+        if force_fullscreen_layout is None:
+            force_fullscreen_layout = self.javascript('window.paged_display.is_full_screen_layout', typ=bool)
+        f = 'true' if force_fullscreen_layout else 'false'
+        side_margin = self.javascript('window.paged_display.layout(%s)'%f, typ=int)
         mf = self.mainFrame()
         sz = mf.contentsSize()
         scroll_width = self.javascript('document.body.scrollWidth', int)
@@ -292,7 +316,7 @@ class Document(QWebPage):  # {{{
 
     def switch_to_fullscreen_mode(self):
         self.in_fullscreen_mode = True
-        self.javascript('full_screen.on(%d, %s)'%(self.max_fs_width,
+        self.javascript('full_screen.on(%d, %d, %s)'%(self.max_fs_width, self.max_fs_height,
             'true' if self.in_paged_mode else 'false'))
 
     def switch_to_window_mode(self):
@@ -300,9 +324,9 @@ class Document(QWebPage):  # {{{
         self.javascript('full_screen.off(%s)'%('true' if self.in_paged_mode
             else 'false'))
 
-    @pyqtSignature("QString")
+    @pyqtSlot(str)
     def debug(self, msg):
-        prints(msg)
+        prints(unicode(msg))
 
     def reference_mode(self, enable):
         self.javascript(('enter' if enable else 'leave')+'_reference_mode()')
@@ -335,16 +359,16 @@ class Document(QWebPage):  # {{{
             return ans[0] if ans[1] else 0.0
         if typ == 'string':
             return unicode(ans.toString())
+        if typ in {bool, 'bool'}:
+            return ans.toBool()
         return ans
 
     def javaScriptConsoleMessage(self, msg, lineno, msgid):
-        if self.debug_javascript:
+        if DEBUG:
             prints(msg)
-        else:
-            return QWebPage.javaScriptConsoleMessage(self, msg, lineno, msgid)
 
     def javaScriptAlert(self, frame, msg):
-        if self.debug_javascript:
+        if DEBUG:
             prints(msg)
         else:
             return QWebPage.javaScriptAlert(self, frame, msg)
@@ -465,10 +489,12 @@ class DocumentView(QWebView):  # {{{
 
     magnification_changed = pyqtSignal(object)
     DISABLED_BRUSH = QBrush(Qt.lightGray, Qt.Dense5Pattern)
+    gesture_handler = lambda s, e: False
 
     def initialize_view(self, debug_javascript=False):
         self.setRenderHints(QPainter.Antialiasing|QPainter.TextAntialiasing|QPainter.SmoothPixmapTransform)
         self.flipper = SlideFlip(self)
+        self.gesture_handler = GestureHandler(self)
         self.is_auto_repeat_event = False
         self.debug_javascript = debug_javascript
         self.shortcuts =  Shortcuts(SHORTCUTS, 'shortcuts/viewer')
@@ -479,16 +505,16 @@ class DocumentView(QWebView):  # {{{
         self.document = Document(self.shortcuts, parent=self,
                 debug_javascript=debug_javascript)
         self.setPage(self.document)
+        self.inspector = WebInspector(self, self.document)
         self.manager = None
         self._reference_mode = False
         self._ignore_scrollbar_signals = False
         self.loading_url = None
         self.loadFinished.connect(self.load_finished)
-        self.connect(self.document, SIGNAL('linkClicked(QUrl)'), self.link_clicked)
-        self.connect(self.document, SIGNAL('linkHovered(QString,QString,QString)'), self.link_hovered)
-        self.connect(self.document, SIGNAL('selectionChanged()'), self.selection_changed)
-        self.connect(self.document, SIGNAL('animated_scroll_done()'),
-                self.animated_scroll_done, Qt.QueuedConnection)
+        self.document.linkClicked.connect(self.link_clicked)
+        self.document.linkHovered.connect(self.link_hovered)
+        self.document.selectionChanged[()].connect(self.selection_changed)
+        self.document.animated_scroll_done_signal.connect(self.animated_scroll_done, type=Qt.QueuedConnection)
         self.document.page_turn.connect(self.page_turn_requested)
         copy_action = self.pageAction(self.document.Copy)
         copy_action.setIcon(QIcon(I('convert.png')))
@@ -498,12 +524,10 @@ class DocumentView(QWebView):  # {{{
                 d.OpenImageInNewWindow, d.OpenLink, d.Reload, d.InspectElement]))
 
         self.search_online_action = QAction(QIcon(I('search.png')), '', self)
-        self.search_online_action.setShortcut(Qt.CTRL+Qt.Key_E)
         self.search_online_action.triggered.connect(self.search_online)
         self.addAction(self.search_online_action)
         self.dictionary_action = QAction(QIcon(I('dictionary.png')),
                 _('&Lookup in dictionary'), self)
-        self.dictionary_action.setShortcut(Qt.CTRL+Qt.Key_L)
         self.dictionary_action.triggered.connect(self.lookup)
         self.addAction(self.dictionary_action)
         self.image_popup = ImagePopup(self)
@@ -514,7 +538,6 @@ class DocumentView(QWebView):  # {{{
         self.view_table_action.triggered.connect(self.popup_table)
         self.search_action = QAction(QIcon(I('dictionary.png')),
                 _('&Search for next occurrence'), self)
-        self.search_action.setShortcut(Qt.CTRL+Qt.Key_S)
         self.search_action.triggered.connect(self.search_next)
         self.addAction(self.search_action)
 
@@ -546,7 +569,6 @@ class DocumentView(QWebView):  # {{{
             else:
                 m.addAction(name, a[key], self.shortcuts.get_sequences(key)[0])
         self.goto_location_action.setMenu(self.goto_location_menu)
-        self.grabGesture(Qt.SwipeGesture)
 
         self.restore_fonts_action = QAction(_('Default font size'), self)
         self.restore_fonts_action.setCheckable(True)
@@ -623,6 +645,7 @@ class DocumentView(QWebView):  # {{{
                          self.document.font_magnification_step)
 
     def contextMenuEvent(self, ev):
+        from_touch = ev.reason() == ev.Other
         mf = self.document.mainFrame()
         r = mf.hitTestContent(ev.pos())
         img = r.pixmap()
@@ -652,9 +675,15 @@ class DocumentView(QWebView):  # {{{
         text = self._selectedText()
         if text and img.isNull():
             self.search_online_action.setText(text)
-            menu.addAction(self.search_online_action)
-            menu.addAction(self.dictionary_action)
-            menu.addAction(self.search_action)
+            for x, sc in (('search_online', 'Search online'), ('dictionary', 'Lookup word'), ('search', 'Next occurrence')):
+                ac = getattr(self, '%s_action' % x)
+                menu.addAction(ac.icon(), '%s [%s]' % (unicode(ac.text()), ','.join(self.shortcuts.get_shortcuts(sc))), ac.trigger)
+
+        if from_touch and self.manager is not None:
+            word = unicode(mf.evaluateJavaScript('window.calibre_utils.word_at_point(%f, %f)' % (ev.pos().x(), ev.pos().y())).toString())
+            if word:
+                menu.addAction(self.dictionary_action.icon(), _('Lookup %s in the dictionary') % word, partial(self.manager.lookup, word))
+                menu.addAction(self.search_online_action.icon(), _('Search for %s online') % word, partial(self.do_search_online, word))
 
         if not text and img.isNull():
             menu.addSeparator()
@@ -675,8 +704,7 @@ class DocumentView(QWebView):  # {{{
                 menu.addAction(self.manager.action_font_size_smaller)
 
         menu.addSeparator()
-        inspectAction = self.pageAction(self.document.InspectElement)
-        menu.addAction(inspectAction)
+        menu.addAction(_('Inspect'), self.inspect)
 
         if not text and img.isNull() and self.manager is not None:
             menu.addSeparator()
@@ -687,7 +715,27 @@ class DocumentView(QWebView):  # {{{
             menu.addSeparator()
             menu.addAction(self.manager.action_quit)
 
+        for plugin in self.document.all_viewer_plugins:
+            plugin.customize_context_menu(menu, ev, r)
+
+        if from_touch:
+            from calibre.constants import plugins
+            pi = plugins['progress_indicator'][0]
+            for x in (menu, self.goto_location_menu):
+                if hasattr(pi, 'set_touch_menu_style'):
+                    pi.set_touch_menu_style(x)
+            helpt = QAction(QIcon(I('help.png')), _('Show supported touch screen gestures'), menu)
+            helpt.triggered.connect(self.gesture_handler.show_help)
+            menu.insertAction(menu.actions()[0], helpt)
+        else:
+            self.goto_location_menu.setStyle(self.style())
+        self.context_menu = menu
         menu.exec_(ev.globalPos())
+
+    def inspect(self):
+        self.inspector.show()
+        self.inspector.raise_()
+        self.pageAction(self.document.InspectElement).trigger()
 
     def lookup(self, *args):
         if self.manager is not None:
@@ -704,13 +752,16 @@ class DocumentView(QWebView):  # {{{
     def search_online(self):
         t = unicode(self.selectedText()).strip()
         if t:
-            url = 'https://www.google.com/search?q=' + QUrl().toPercentEncoding(t)
-            open_url(QUrl.fromEncoded(url))
+            self.do_search_online(t)
+
+    def do_search_online(self, text):
+        url = 'https://www.google.com/search?q=' + QUrl().toPercentEncoding(text)
+        open_url(QUrl.fromEncoded(url))
 
     def set_manager(self, manager):
         self.manager = manager
         self.scrollbar = manager.horizontal_scrollbar
-        self.connect(self.scrollbar, SIGNAL('valueChanged(int)'), self.scroll_horizontally)
+        self.scrollbar.valueChanged[(int)].connect(self.scroll_horizontally)
 
     def scroll_horizontally(self, amount):
         self.document.scroll_to(y=self.document.ypos, x=amount)
@@ -775,7 +826,7 @@ class DocumentView(QWebView):  # {{{
 
     def search(self, text, backwards=False):
         flags = self.document.FindBackward if backwards else self.document.FindFlags(0)
-        found = self.findText(text, flags)
+        found = self.document.findText(text, flags)
         if found and self.document.in_paged_mode:
             self.document.javascript('paged_display.snap_to_selection()')
         return found
@@ -1066,8 +1117,12 @@ class DocumentView(QWebView):  # {{{
         def fget(self):
             return self.zoomFactor()
         def fset(self, val):
+            oval = self.zoomFactor()
             self.setZoomFactor(val)
-            self.magnification_changed.emit(val)
+            if val != oval:
+                if self.document.in_paged_mode:
+                    self.document.update_contents_size_for_paged_mode()
+                self.magnification_changed.emit(val)
         return property(fget=fget, fset=fset)
 
     def magnify_fonts(self, amount=None):
@@ -1237,23 +1292,9 @@ class DocumentView(QWebView):  # {{{
         return QWebView.resizeEvent(self, event)
 
     def event(self, ev):
-        if ev.type() == ev.Gesture:
-            swipe = ev.gesture(Qt.SwipeGesture)
-            if swipe is not None:
-                self.handle_swipe(swipe)
-                return True
+        if self.gesture_handler(ev):
+            return True
         return QWebView.event(self, ev)
-
-    def handle_swipe(self, swipe):
-        if swipe.state() == Qt.GestureFinished:
-            if swipe.horizontalDirection() == QSwipeGesture.Left:
-                self.previous_page()
-            elif swipe.horizontalDirection() == QSwipeGesture.Right:
-                self.next_page()
-            elif swipe.verticalDirection() == QSwipeGesture.Up:
-                self.goto_previous_section()
-            elif swipe.horizontalDirection() == QSwipeGesture.Down:
-                self.goto_next_section()
 
     def mouseReleaseEvent(self, ev):
         opos = self.document.ypos

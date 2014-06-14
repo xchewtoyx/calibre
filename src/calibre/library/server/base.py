@@ -25,11 +25,10 @@ from calibre.library.server.opds import OPDSServer
 from calibre.library.server.cache import Cache
 from calibre.library.server.browse import BrowseServer
 from calibre.library.server.ajax import AjaxServer
-from calibre.utils.search_query_parser import saved_searches
 from calibre import prints, as_unicode
 
 
-class DispatchController(object): # {{{
+class DispatchController(object):  # {{{
 
     def __init__(self, prefix, wsgi=False, auth_controller=None):
         self.dispatcher = cherrypy.dispatch.RoutesDispatcher()
@@ -48,6 +47,10 @@ class DispatchController(object): # {{{
         aw = kwargs.pop('android_workaround', False)
         if route != '/':
             route = self.prefix + route
+        if isinstance(route, unicode):
+            # Apparently the routes package chokes on unicode routes, see
+            # http://www.mobileread.com/forums/showthread.php?t=235366
+            route = route.encode('utf-8')
         elif self.prefix:
             self.dispatcher.connect(name+'prefix_extra', self.prefix, self,
                     **kwargs)
@@ -72,7 +75,7 @@ class DispatchController(object): # {{{
 
 # }}}
 
-class BonJour(SimplePlugin): # {{{
+class BonJour(SimplePlugin):  # {{{
 
     def __init__(self, engine, port=8080, prefix=''):
         SimplePlugin.__init__(self, engine)
@@ -88,7 +91,6 @@ class BonJour(SimplePlugin): # {{{
             ('Books in calibre', '_calibre._tcp', self.port,
                 {'path':self.prefix+'/opds'}),
         ]
-
 
     def start(self):
         zeroconf_ip_address = verify_ipV4_address(self.ip_address)
@@ -110,7 +112,6 @@ class BonJour(SimplePlugin): # {{{
             import traceback
             cherrypy.log.error('Failed to stop BonJour:')
             cherrypy.log.error(traceback.format_exc())
-
 
     stop.priority = 10
 
@@ -162,9 +163,9 @@ class LibraryServer(ContentServer, MobileServer, XMLServer, OPDSServer, Cache,
             'request.show_tracebacks': show_tracebacks,
             'server.socket_host'     : listen_on,
             'server.socket_port'     : opts.port,
-            'server.socket_timeout'  : opts.timeout, #seconds
-            'server.thread_pool'     : opts.thread_pool, # number of threads
-            'server.shutdown_timeout': st, # minutes
+            'server.socket_timeout'  : opts.timeout,  # seconds
+            'server.thread_pool'     : opts.thread_pool,  # number of threads
+            'server.shutdown_timeout': st,  # minutes
         })
         if embedded or wsgi:
             cherrypy.config.update({'engine.SIGHUP'          : None,
@@ -174,9 +175,9 @@ class LibraryServer(ContentServer, MobileServer, XMLServer, OPDSServer, Cache,
         self.exception = None
         auth_controller = None
         self.users_dict = {}
-        #self.config['/'] = {
+        # self.config['/'] = {
         #    'tools.sessions.on' : True,
-        #    'tools.sessions.timeout': 60, # Session times out after 60 minutes
+        # 'tools.sessions.timeout': 60, # Session times out after 60 minutes
         #}
 
         if not wsgi:
@@ -188,7 +189,7 @@ class LibraryServer(ContentServer, MobileServer, XMLServer, OPDSServer, Cache,
                     'text/xml', 'text/javascript', 'text/css'],
             }
 
-            if opts.password:
+            if opts.username and opts.password:
                 self.users_dict[opts.username.strip()] = opts.password.strip()
                 auth_controller = AuthController('Your calibre library',
                         self.users_dict)
@@ -210,7 +211,7 @@ class LibraryServer(ContentServer, MobileServer, XMLServer, OPDSServer, Cache,
         if sr:
             if sr in virt_libs:
                 sr = virt_libs[sr]
-            elif sr not in saved_searches().names():
+            elif sr not in self.db.saved_search_names():
                 prints('WARNING: Content server: search restriction ',
                        sr, ' does not exist')
                 sr = ''
@@ -316,4 +317,10 @@ class LibraryServer(ContentServer, MobileServer, XMLServer, OPDSServer, Cache,
         t = Thread(target=self.exit)
         t.daemon = True
         t.start()
+
+    def search_for_books(self, query):
+        return self.db.search_getting_ids(
+            (query or '').strip(), self.search_restriction,
+            sort_results=False, use_virtual_library=False)
+
 

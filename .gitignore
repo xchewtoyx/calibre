@@ -14,7 +14,6 @@ build
 dist
 docs
 resources/localization
-resources/images.qrc
 resources/scripts.pickle
 resources/ebook-convert-complete.pickle
 resources/builtin_recipes.xml
@@ -30,6 +29,9 @@ src/cssutils/stylesheets/.svn/
 src/odf/.svn
 tags
 nbproject/
+translations/calibre/*.po
+translations/calibre/*.pot
+translations/iso_639/*.po
 *.mdproj
 *.pidb
 *.sln
@@ -42,3 +44,4 @@ calibre_plugins/
 recipes/*.mobi
 recipes/*.epub
 recipes/debug
+/.metadata/

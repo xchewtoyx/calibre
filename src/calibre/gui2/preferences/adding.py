@@ -27,6 +27,7 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
         r('read_file_metadata', prefs)
         r('swap_author_names', prefs)
         r('add_formats_to_existing', prefs)
+        r('check_for_dupes_on_ctl', prefs)
         r('preserve_date_on_ctl', gprefs)
         r('manual_add_auto_convert', gprefs)
         choices = [
@@ -35,7 +36,9 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
                 (_('Create new record for each duplicate format'), 'new record')]
         r('automerge', gprefs, choices=choices)
         r('new_book_tags', prefs, setting=CommaSeparatedList)
+        r('mark_new_books', prefs)
         r('auto_add_path', gprefs, restart_required=True)
+        r('auto_add_everything', gprefs, restart_required=True)
         r('auto_add_check_for_duplicates', gprefs)
         r('auto_add_auto_convert', gprefs)
 
@@ -117,7 +120,7 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
                             _('You do not have read/write permissions for '
                                 'the folder: %s')%path, show=True)
                     raise AbortCommit('invalid auto-add folder')
-                if not question_dialog(self, _('Are you sure'),
+                if not question_dialog(self, _('Are you sure?'),
                         _('<b>WARNING:</b> Any files you place in %s will be '
                             'automatically deleted after being added to '
                             'calibre. Are you sure?')%path):

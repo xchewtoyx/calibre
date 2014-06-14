@@ -6,6 +6,10 @@ from __future__ import (unicode_literals, division, absolute_import,
 __license__ = 'GPL v3'
 __copyright__ = '2013, Kovid Goyal <kovid at kovidgoyal.net>'
 
+import os
+
+from calibre.ebooks.docx.names import XPath
+NBSP = '\xa0'
 
 def mergeable(previous, current):
     if previous.tail or current.tail:
@@ -83,11 +87,35 @@ def lift(span):
         else:
             add_text(last_child, 'tail', span.tail)
 
+def before_count(root, tag, limit=10):
+    body = root.xpath('//body[1]')
+    if not body:
+        return limit
+    ans = 0
+    for elem in body[0].iterdescendants():
+        if elem is tag:
+            return ans
+        ans += 1
+        if ans > limit:
+            return limit
 
-def cleanup_markup(root, styles):
+def cleanup_markup(log, root, styles, dest_dir, detect_cover):
+    # Move <hr>s outside paragraphs, if possible.
+    pancestor = XPath('|'.join('ancestor::%s[1]' % x for x in ('p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6')))
+    for hr in root.xpath('//span/hr'):
+        p = pancestor(hr)
+        if p:
+            p = p[0]
+            descendants = tuple(p.iterdescendants())
+            if descendants[-1] is hr:
+                parent = p.getparent()
+                idx = parent.index(p)
+                parent.insert(idx+1, hr)
+                hr.tail = '\n\t'
+
     # Merge consecutive spans that have the same styling
     current_run = []
-    for span in root.xpath('//span'):
+    for span in root.xpath('//span[not(@style)]'):
         if not current_run:
             current_run.append(span)
         else:
@@ -120,7 +148,7 @@ def cleanup_markup(root, styles):
                     parent.append(child)
 
     # Make spans whose only styling is bold or italic into <b> and <i> tags
-    for span in root.xpath('//span[@class]'):
+    for span in root.xpath('//span[@class and not(@style)]'):
         css = class_map.get(span.get('class', None), {})
         if len(css) == 1:
             if css == {'font-style':'italic'}:
@@ -131,6 +159,39 @@ def cleanup_markup(root, styles):
                 del span.attrib['class']
 
     # Get rid of <span>s that have no styling
-    for span in root.xpath('//span[not(@class) and not(@id)]'):
+    for span in root.xpath('//span[not(@class) and not(@id) and not(@style)]'):
         lift(span)
+
+    # Convert <p><br style="page-break-after:always"> </p> style page breaks
+    # into something the viewer will render as a page break
+    for p in root.xpath('//p[br[@style="page-break-after:always"]]'):
+        if len(p) == 1 and (not p[0].tail or not p[0].tail.strip()):
+            p.remove(p[0])
+            prefix = p.get('style', '')
+            if prefix:
+                prefix += '; '
+            p.set('style', prefix + 'page-break-after:always')
+            p.text = NBSP if not p.text else p.text
+
+    if detect_cover:
+        # Check if the first image in the document is possibly a cover
+        img = root.xpath('//img[@src][1]')
+        if img:
+            img = img[0]
+            path = os.path.join(dest_dir, img.get('src'))
+            if os.path.exists(path) and before_count(root, img, limit=10) < 5:
+                from calibre.utils.magick.draw import identify
+                try:
+                    width, height, fmt = identify(path)
+                except:
+                    width, height, fmt = 0, 0, None
+                del fmt
+                try:
+                    is_cover = 0.8 <= height/width <= 1.8 and height*width >= 160000
+                except ZeroDivisionError:
+                    is_cover = False
+                if is_cover:
+                    log.debug('Detected an image that looks like a cover')
+                    img.getparent().remove(img)
+                    return path
 

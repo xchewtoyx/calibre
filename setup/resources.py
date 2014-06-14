@@ -6,8 +6,9 @@ __license__   = 'GPL v3'
 __copyright__ = '2009, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
-import os, cPickle, re, shutil, marshal, zipfile, glob, time, subprocess, sys
+import os, cPickle, re, shutil, marshal, zipfile, glob, time, subprocess, sys, hashlib, json
 from zlib import compress
+from itertools import chain
 
 from setup import Command, basenames, __appname__
 
@@ -18,12 +19,14 @@ def get_opts_from_parser(parser):
         for x in opt._short_opts:
             yield x
     for o in parser.option_list:
-        for x in do_opt(o): yield x
+        for x in do_opt(o):
+            yield x
     for g in parser.option_groups:
         for o in g.option_list:
-            for x in do_opt(o): yield x
+            for x in do_opt(o):
+                yield x
 
-class Coffee(Command): # {{{
+class Coffee(Command):  # {{{
 
     description = 'Compile coffeescript files into javascript'
     COFFEE_DIRS = ('ebooks/oeb/display', 'ebooks/oeb/polish')
@@ -60,18 +63,20 @@ class Coffee(Command): # {{{
                 '*.coffee')):
                 bn = os.path.basename(f).rpartition('.')[0]
                 arcname = src.replace('/', '.') + '.' + bn + '.js'
-                src_files[arcname] = (f, os.stat(f).st_mtime)
+                with open(f, 'rb') as fs:
+                    src_files[arcname] = (f, hashlib.sha1(fs.read()).hexdigest())
 
         existing = {}
         dest = self.j(self.RESOURCES, 'compiled_coffeescript.zip')
         if os.path.exists(dest):
             with zipfile.ZipFile(dest, 'r') as zf:
+                existing_hashes = {}
+                raw = zf.comment
+                if raw:
+                    existing_hashes = json.loads(raw)
                 for info in zf.infolist():
-                    mtime = time.mktime(info.date_time + (0, 0, -1))
-                    arcname = info.filename
-                    if (arcname in src_files and src_files[arcname][1] <
-                            mtime):
-                        existing[arcname] = (zf.read(info), info)
+                    if info.filename in existing_hashes and src_files.get(info.filename, (None, None))[1] == existing_hashes[info.filename]:
+                        existing[info.filename] = (zf.read(info), info, existing_hashes[info.filename])
 
         todo = set(src_files) - set(existing)
         updated = {}
@@ -79,7 +84,7 @@ class Coffee(Command): # {{{
             name = arcname.rpartition('.')[0]
             print ('\t%sCompiling %s'%(time.strftime('[%H:%M:%S] ') if
                         timestamp else '', name))
-            src = src_files[arcname][0]
+            src, sig = src_files[arcname]
             try:
                 js = subprocess.check_output(self.compiler +
                         [src]).decode('utf-8')
@@ -98,13 +103,14 @@ class Coffee(Command): # {{{
             zi = zipfile.ZipInfo()
             zi.filename = arcname
             zi.date_time = time.localtime()[:6]
-            updated[arcname] = (js.encode('utf-8'), zi)
+            updated[arcname] = (js.encode('utf-8'), zi, sig)
         if updated:
+            hashes = {}
             with zipfile.ZipFile(dest, 'w', zipfile.ZIP_STORED) as zf:
-                for raw, zi in updated.itervalues():
+                for raw, zi, sig in sorted(chain(updated.itervalues(), existing.itervalues()), key=lambda x: x[1].filename):
                     zf.writestr(zi, raw)
-                for raw, zi in existing.itervalues():
-                    zf.writestr(zi, raw)
+                    hashes[zi.filename] = sig
+                zf.comment = json.dumps(hashes)
 
     def clean(self):
         x = self.j(self.RESOURCES, 'compiled_coffeescript.zip')
@@ -112,7 +118,7 @@ class Coffee(Command): # {{{
             os.remove(x)
 # }}}
 
-class Kakasi(Command): # {{{
+class Kakasi(Command):  # {{{
 
     description = 'Compile resources for unihandecode'
 
@@ -155,29 +161,29 @@ class Kakasi(Command): # {{{
         dic = {}
         for line in open(src, "r"):
             line = line.decode("utf-8").strip()
-            if line.startswith(';;'): # skip comment
+            if line.startswith(';;'):  # skip comment
                 continue
             if re.match(r"^$",line):
                 continue
             pair = re.sub(r'\\u([0-9a-fA-F]{4})', lambda x:unichr(int(x.group(1),16)), line)
             dic[pair[0]] = pair[1]
-        cPickle.dump(dic, open(dst, 'wb'), protocol=-1) #pickle
+        cPickle.dump(dic, open(dst, 'wb'), protocol=-1)  # pickle
 
     def mkkanadict(self, src, dst):
         dic = {}
         for line in open(src, "r"):
             line = line.decode("utf-8").strip()
-            if line.startswith(';;'): # skip comment
+            if line.startswith(';;'):  # skip comment
                 continue
             if re.match(r"^$",line):
                 continue
             (alpha, kana) = line.split(' ')
             dic[kana] = alpha
-        cPickle.dump(dic, open(dst, 'wb'), protocol=-1) #pickle
+        cPickle.dump(dic, open(dst, 'wb'), protocol=-1)  # pickle
 
     def parsekdict(self, line):
         line = line.decode("utf-8").strip()
-        if line.startswith(';;'): # skip comment
+        if line.startswith(';;'):  # skip comment
             return
         (yomi, kanji) = line.split(' ')
         if ord(yomi[-1:]) <= ord('z'):
@@ -193,7 +199,7 @@ class Kakasi(Command): # {{{
             if kanji in self.records[key]:
                 rec = self.records[key][kanji]
                 rec.append((yomi,tail))
-                self.records[key].update( {kanji: rec} )
+                self.records[key].update({kanji: rec})
             else:
                 self.records[key][kanji]=[(yomi, tail)]
         else:
@@ -213,7 +219,7 @@ class Kakasi(Command): # {{{
             shutil.rmtree(kakasi)
 # }}}
 
-class Resources(Command): # {{{
+class Resources(Command):  # {{{
 
     description = 'Compile various needed calibre resources'
     sub_commands = ['kakasi', 'coffee']
@@ -254,7 +260,6 @@ class Resources(Command): # {{{
                 for n in sorted(files, key=self.b):
                     with open(n, 'rb') as f:
                         zf.writestr(os.path.basename(n), f.read())
-
 
         dest = self.j(self.RESOURCES, 'ebook-convert-complete.pickle')
         files = []

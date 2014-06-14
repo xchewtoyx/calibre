@@ -7,7 +7,7 @@ import json, os, traceback
 
 from PyQt4.Qt import (Qt, QDialog, QDialogButtonBox, QSyntaxHighlighter, QFont,
                       QRegExp, QApplication, QTextCharFormat, QColor, QCursor,
-                      QIcon, QSize)
+                      QIcon, QSize, QVariant)
 
 from calibre import sanitize_file_name_unicode
 from calibre.constants import config_dir
@@ -18,7 +18,6 @@ from calibre.ebooks.metadata.book.base import Metadata
 from calibre.ebooks.metadata.book.formatter import SafeFormat
 from calibre.library.coloring import (displayable_columns, color_row_key)
 from calibre.gui2 import error_dialog, choose_files, pixmap_to_data
-
 
 class ParenPosition:
 
@@ -230,9 +229,6 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
             for n1, k1 in cols:
                 self.colored_field.addItem(n1, k1)
             self.colored_field.setCurrentIndex(self.colored_field.findData(color_field))
-            colors = QColor.colorNames()
-            colors.sort()
-            self.color_name.addItems(colors)
         elif self.iconing:
             self.icon_layout.setVisible(True)
             for n1, k1 in cols:
@@ -247,9 +243,15 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
                             self.icon_file_names.append(icon_file)
             self.icon_file_names.sort(key=sort_key)
             self.update_filename_box()
-            self.icon_with_text.setChecked(True)
-            if icon_rule_kind == 'icon_only':
-                self.icon_without_text.setChecked(True)
+
+            dex = 0
+            from calibre.gui2.preferences.coloring import icon_rule_kinds
+            for i,tup in enumerate(icon_rule_kinds):
+                txt,val = tup
+                self.icon_kind.addItem(txt, userData=QVariant(val))
+                if val == icon_rule_kind:
+                    dex = i
+            self.icon_kind.setCurrentIndex(dex)
             self.icon_field.setCurrentIndex(self.icon_field.findData(icon_field_key))
 
         if mi:
@@ -262,6 +264,16 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
             self.mi.rating = 4.0
             self.mi.tags = [_('Tag 1'), _('Tag 2')]
             self.mi.languages = ['eng']
+            if fm is not None:
+                self.mi.set_all_user_metadata(fm.custom_field_metadata())
+            else:
+                # No field metadata. Grab a copy from the current library so
+                # that we can validate any custom column names. The values for
+                # the columns will all be empty, which in some very unusual
+                # cases might cause formatter errors. We can live with that.
+                from calibre.gui2.ui import get_gui
+                self.mi.set_all_user_metadata(
+                      get_gui().current_db.new_api.field_metadata.custom_field_metadata())
 
         # Remove help icon on title bar
         icon = self.windowIcon()
@@ -355,7 +367,7 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
     def color_to_clipboard(self):
         app = QApplication.instance()
         c = app.clipboard()
-        c.setText(unicode(self.color_name.currentText()))
+        c.setText(unicode(self.color_name.color))
 
     def icon_to_clipboard(self):
         app = QApplication.instance()
@@ -408,7 +420,7 @@ class TemplateDialog(QDialog, Ui_TemplateDialog):
             self.rule = (unicode(self.colored_field.itemData(
                                 self.colored_field.currentIndex()).toString()), txt)
         elif self.iconing:
-            rt = 'icon' if self.icon_with_text.isChecked() else 'icon_only'
+            rt = unicode(self.icon_kind.itemData(self.icon_kind.currentIndex()).toString())
             self.rule = (rt,
                          unicode(self.icon_field.itemData(
                                 self.icon_field.currentIndex()).toString()),

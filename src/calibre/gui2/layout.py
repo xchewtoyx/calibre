@@ -25,6 +25,7 @@ class LocationManager(QObject):  # {{{
     unmount_device = pyqtSignal()
     location_selected = pyqtSignal(object)
     configure_device = pyqtSignal()
+    update_device_metadata = pyqtSignal()
 
     def __init__(self, parent=None):
         QObject.__init__(self, parent)
@@ -59,6 +60,9 @@ class LocationManager(QObject):  # {{{
                 self._mem.append(a)
                 a = m.addAction(QIcon(I('config.png')), _('Configure this device'))
                 a.triggered.connect(self._configure_requested)
+                self._mem.append(a)
+                a = m.addAction(QIcon(I('sync.png')), _('Update cached metadata on device'))
+                a.triggered.connect(lambda x : self.update_device_metadata.emit())
                 self._mem.append(a)
 
             else:
@@ -180,6 +184,14 @@ class SearchBar(QWidget):  # {{{
         l.addWidget(x)
         parent.virtual_library = x
 
+        x = QToolButton(self)
+        x.setIcon(QIcon(I('minus.png')))
+        x.setObjectName('clear_vl')
+        l.addWidget(x)
+        x.setVisible(False)
+        x.setToolTip(_('Close the Virtual Library'))
+        parent.clear_vl = x
+
         x = QLabel(self)
         x.setObjectName("search_count")
         l.addWidget(x)
@@ -190,7 +202,7 @@ class SearchBar(QWidget):  # {{{
         parent.advanced_search_toggle_action = ac = QAction(parent)
         parent.addAction(ac)
         parent.keyboard.register_shortcut('advanced search toggle',
-                _('Advanced search'), default_keys=(_("Shift+Ctrl+F"),),
+                _('Advanced search'), default_keys=("Shift+Ctrl+F",),
                 action=ac)
         ac.triggered.connect(x.click)
         x.setIcon(QIcon(I('search.png')))

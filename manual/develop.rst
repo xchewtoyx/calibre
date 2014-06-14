@@ -39,7 +39,7 @@ All the |app| python code is in the ``calibre`` package. This package contains t
 
     * devices - All the device drivers. Just look through some of the built-in drivers to get an idea for how they work.
 
-      * For details, see: devices.interface which defines the interface supported by device drivers and ``devices.usbms`` which
+      * For details, see: ``devices.interface`` which defines the interface supported by device drivers and ``devices.usbms`` which
         defines a generic driver that connects to a USBMS device. All USBMS based drivers in |app| inherit from it.
 
     * ebooks  - All the ebook conversion/metadata code. A good starting point is ``calibre.ebooks.conversion.cli`` which is the
@@ -49,7 +49,7 @@ All the |app| python code is in the ``calibre`` package. This package contains t
         * Metadata reading, writing, and downloading is all in ``ebooks.metadata``
         * Conversion happens in a pipeline, for the structure of the pipeline,
           see :ref:`conversion-introduction`. The pipeline consists of an input
-          plugin, various transforms and an output plugin. The that code constructs
+          plugin, various transforms and an output plugin. The code that constructs
           and drives the pipeline is in :file:`plumber.py`. The pipeline works on a
           representation of an ebook that is like an unzipped epub, with
           manifest, spine, toc, guide, html content, etc. The
@@ -57,9 +57,17 @@ All the |app| python code is in the ``calibre`` package. This package contains t
           various transformations that are applied to the book during
           conversions live in :file:`oeb/transforms/*.py`. And the input and output
           plugins live in :file:`conversion/plugins/*.py`.
+        * Ebook editing happens using a different container object. All the
+          code for editing is in ``ebooks.oeb.polish`` in particular the
+          container object is in ``ebooks.oeb.polish.container``.
 
-    * library - The database back-end and the content server. See ``library.database2`` for the interface to the |app| library. ``library.server`` is the |app| Content Server.
-    * gui2 - The Graphical User Interface. GUI initialization happens in ``gui2.main`` and ``gui2.ui``. The ebook-viewer is in ``gui2.viewer``.
+    * db - The database back-end. See ``db.cache`` for the interface to the |app| library. With a DB object you can access this API via ``db.new_api``. The db object itself exposes a legacy API that should not be used in new code. The legacy API is in ``library.database2``.
+    * content server: ``library.server`` is the |app| Content Server.
+    * gui2 - The Graphical User Interface. GUI initialization happens in ``gui2.main`` and ``gui2.ui``. The ebook-viewer is in ``gui2.viewer``. The ebook editor is in ``gui2.tweak_book``.
+
+If you want to locate the entry points for all the various |app| executables,
+look at the ``entry_points`` structure in `linux.py
+<https://github.com/kovidgoyal/calibre/blob/master/src/calibre/linux.py>`_.
 
 If you need help understanding the code, post in the `development forum <http://www.mobileread.com/forums/forumdisplay.php?f=240>`_
 and you will most likely get help from one of |app|'s many developers.
@@ -267,6 +275,22 @@ Python is a
 dynamically typed language with excellent facilities for introspection. Kovid wrote the core |app| code without once
 using a debugger. There are many strategies to debug |app| code:
 
+Using print statements
+^^^^^^^^^^^^^^^^^^^^^^^
+
+This is Kovid's favorite way to debug. Simply insert print statements at points of interest and run your program in the
+terminal. For example, you can start the GUI from the terminal as::
+
+    calibre-debug -g
+
+Similarly, you can start the ebook-viewer as::
+
+    calibre-debug -w /path/to/file/to/be/viewed
+
+The ebook-editor can be started as::
+
+    calibre-debug -t /path/to/be/edited
+
 Using an interactive python interpreter
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -280,23 +304,51 @@ locally defined variables (variables in the local scope). The interactive prompt
 for object properties and you can use the various Python facilities for introspection, such as
 :func:`dir`, :func:`type`, :func:`repr`, etc.
 
-Using print statements
-^^^^^^^^^^^^^^^^^^^^^^^
+Using the python debugger as a remote debugger
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-This is Kovid's favorite way to debug. Simply insert print statements at points of interest and run your program in the
-terminal. For example, you can start the GUI from the terminal as::
+You can use the builtin python debugger (pdb) as a remote debugger from the
+command line. First, start the remote debugger at the point in the calibre code
+you are interested in, like this::
 
-    calibre-debug -g
+    from calibre.rpdb import set_trace
+    set_trace()
 
-Similarly, you can start the ebook-viewer as::
+Then run calibre, either as normal, or using one of the calibre-debug commands
+described in the previous section. Once the above point in the code is reached,
+calibre will freeze, waiting for the debugger to connect.
 
-    calibre-debug -w /path/to/file/to/be/viewed
+Now open a terminal or command prompt and use the following command to start
+the debugging session::
 
-Using the debugger in PyDev
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    calibre-debug -c "from calibre.rpdb import cli; cli()"
 
-It is possible to get the debugger in PyDev working with the |app| development environment,
-see the `forum thread <http://www.mobileread.com/forums/showthread.php?t=143208>`_.
+You can read about how to use the python debugger in the `python stdlib docs
+for the pdb module <https://docs.python.org/2/library/pdb.html#debugger-commands>`_.
+
+.. note::
+    By default, the remote debugger will try to connect on port 4444. You can
+    change it, by passing the port parameter to both the set_trace() and the
+    cli() functions above, like this: ``set_trace(port=1234)`` and
+    ``cli(port=1234)``.
+
+.. note:: 
+    The python debugger cannot handle multiple threads, so you have to
+    call set_trace once per thread, each time with a different port number.
+
+Using the debugger in your favorite python IDE
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+It is possible to use the builtin debugger in your favorite python IDE, if it
+supports remote debugging. The first step is to add the |app| src checkout to
+the ``PYTHONPATH`` in your IDE. In other words, the directory you set as
+``CALIBRE_DEVELOP_FROM`` above, must also be in the ``PYTHONPATH`` of your IDE.
+
+Then place the IDE's remote debugger module into the :file:`src` subdirectory
+of the |app| source code checkout. Add whatever code is needed to launch the
+remote debugger to |app| at the point of interest, for example in the main
+function. Then run |app| as normal. Your IDE should now be able to connect to
+the remote debugger running inside |app|.
 
 Executing arbitrary scripts in the |app| python environment
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

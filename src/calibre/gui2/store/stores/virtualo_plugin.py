@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import (unicode_literals, division, absolute_import, print_function)
-store_version = 3 # Needed for dynamic plugin loading
+store_version = 5 # Needed for dynamic plugin loading
 
 __license__ = 'GPL 3'
 __copyright__ = '2011-2013, Tomasz Długosz <tomek3d@gmail.com>'
@@ -9,6 +9,7 @@ __docformat__ = 'restructuredtext en'
 
 import re
 import urllib
+from base64 import b64encode
 from contextlib import closing
 
 from lxml import html
@@ -25,12 +26,18 @@ from calibre.gui2.store.web_store_dialog import WebStoreDialog
 class VirtualoStore(BasicStoreConfig, StorePlugin):
 
     def open(self, parent=None, detail_item=None, external=False):
-        pid = '12'
-        url = 'http://virtualo.pl/ebook/c2/?pr=' + pid
-        detail_url = detail_item + '&pr=' + pid if detail_item else url
+        aff_root = 'https://www.a4b-tracking.com/pl/stat-click-text-link/12/58/'
+
+        url = 'http://virtualo.pl/ebook/c2/'
+
+        aff_url = aff_root + str(b64encode(url))
+
+        detail_url = None
+        if detail_item:
+            detail_url = aff_root + str(b64encode(detail_item))
 
         if external or self.config.get('open_external', False):
-            open_url(QUrl(url_slash_cleaner(detail_url)))
+            open_url(QUrl(url_slash_cleaner(detail_url if detail_url else aff_url)))
         else:
             d = WebStoreDialog(self.gui, url, parent, detail_item)
             d.setWindowTitle(self.name)
@@ -50,7 +57,7 @@ class VirtualoStore(BasicStoreConfig, StorePlugin):
                 if counter <= 0:
                     break
 
-                id = ''.join(data.xpath('.//div[@class="list_middle_left"]//a/@href'))
+                id = ''.join(data.xpath('.//div[@class="list_middle_left"]//a/@href')).split(r'?q=')[0]
                 if not id:
                     continue
 
@@ -58,7 +65,7 @@ class VirtualoStore(BasicStoreConfig, StorePlugin):
                 cover_url = ''.join(data.xpath('.//div[@class="list_middle_left"]//a//img/@src'))
                 title = ''.join(data.xpath('.//div[@class="list_title list_text_left"]/a/text()'))
                 author = ', '.join(data.xpath('.//div[@class="list_authors list_text_left"]/a/text()'))
-                formats = [ form.split('_')[-1].replace('.png', '') for form in data.xpath('.//div[@style="width:55%;float:left;text-align:left;height:18px;"]//a/span/img/@src')]
+                formats = [ form.split('-')[-1] for form in data.xpath('.//div[@style="width:55%;float:left;text-align:left;height:18px;"]//a/span/div[1]/@class')]
                 nodrm = no_drm_pattern.search(''.join(data.xpath('.//div[@style="width:45%;float:right;text-align:right;height:18px;"]//span[@class="prompt_preview"]/text()')))
 
                 counter -= 1

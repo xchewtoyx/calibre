@@ -6,9 +6,10 @@ __copyright__ = '2008, Kovid Goyal <kovid at kovidgoyal.net>'
 import os, traceback, Queue, time, cStringIO, re, sys, weakref
 from threading import Thread, Event
 
-from PyQt4.Qt import (QMenu, QAction, QActionGroup, QIcon, SIGNAL,
-                     Qt, pyqtSignal, QDialog, QObject, QVBoxLayout,
-                     QDialogButtonBox)
+from PyQt4.Qt import (
+    QMenu, QAction, QActionGroup, QIcon, Qt, pyqtSignal, QDialog,
+    QObject, QVBoxLayout, QDialogButtonBox, QCursor, QCoreApplication,
+    QApplication, QEventLoop)
 
 from calibre.customize.ui import (available_input_formats, available_output_formats,
     device_plugins, disabled_device_plugins)
@@ -22,7 +23,7 @@ from calibre.gui2 import (config, error_dialog, Dispatcher, dynamic,
         warning_dialog, info_dialog, choose_dir, FunctionDispatcher,
         show_restart_warning, gprefs, question_dialog)
 from calibre.ebooks.metadata import authors_to_string
-from calibre import preferred_encoding, prints, force_unicode, as_unicode
+from calibre import preferred_encoding, prints, force_unicode, as_unicode, sanitize_file_name2
 from calibre.utils.filenames import ascii_filename
 from calibre.devices.errors import (FreeSpaceError, WrongDestinationError,
         BlacklistedDevice)
@@ -35,7 +36,7 @@ from calibre.utils.magick.draw import thumbnail
 from calibre.library.save_to_disk import find_plugboard
 # }}}
 
-class DeviceJob(BaseJob): # {{{
+class DeviceJob(BaseJob):  # {{{
 
     def __init__(self, func, done, job_manager, args=[], kwargs={},
             description=''):
@@ -119,7 +120,16 @@ def device_name_for_plugboards(device_class):
         return device_class.DEVICE_PLUGBOARD_NAME
     return device_class.__class__.__name__
 
-class DeviceManager(Thread): # {{{
+class BusyCursor(object):
+
+    def __enter__(self):
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+
+    def __exit__(self, *args):
+        QApplication.restoreOverrideCursor()
+
+
+class DeviceManager(Thread):  # {{{
 
     def __init__(self, connected_slot, job_manager, open_feedback_slot,
                  open_feedback_msg, allow_connect_slot,
@@ -165,6 +175,10 @@ class DeviceManager(Thread): # {{{
     @property
     def is_device_connected(self):
         return self.connected_device is not None
+
+    @property
+    def is_device_present(self):
+        return self.connected_device is not None and self.connected_device not in self.ejected_devices
 
     @property
     def device(self):
@@ -591,12 +605,11 @@ class DeviceManager(Thread): # {{{
     def _save_books(self, paths, target):
         '''Copy books from device to disk'''
         for path in paths:
-            name = path.rpartition(os.sep)[2]
+            name = sanitize_file_name2(os.path.basename(path))
             dest = os.path.join(target, name)
             if os.path.abspath(dest) != os.path.abspath(path):
-                f = open(dest, 'wb')
-                self.device.get_file(path, f)
-                f.close()
+                with open(dest, 'wb') as f:
+                    self.device.get_file(path, f)
 
     def save_books(self, done, paths, target, add_as_step_to_job=None):
         return self.create_job_step(self._save_books, done, args=[paths, target],
@@ -659,7 +672,7 @@ class DeviceManager(Thread): # {{{
 
     # }}}
 
-class DeviceAction(QAction): # {{{
+class DeviceAction(QAction):  # {{{
 
     a_s = pyqtSignal(object)
 
@@ -678,10 +691,11 @@ class DeviceAction(QAction): # {{{
                 self.specific)
     # }}}
 
-class DeviceMenu(QMenu): # {{{
+class DeviceMenu(QMenu):  # {{{
 
     fetch_annotations = pyqtSignal()
     disconnect_mounted_device = pyqtSignal()
+    sync = pyqtSignal(object, object, object)
 
     def __init__(self, parent=None):
         QMenu.__init__(self, parent)
@@ -691,7 +705,6 @@ class DeviceMenu(QMenu): # {{{
 
         self.set_default_menu = QMenu(_('Set default send to device action'))
         self.set_default_menu.setIcon(QIcon(I('config.png')))
-
 
         basic_actions = [
                 ('main:', False, False,  I('reader.png'),
@@ -793,8 +806,7 @@ class DeviceMenu(QMenu): # {{{
         action.setChecked(True)
 
     def action_triggered(self, action):
-        self.emit(SIGNAL('sync(PyQt_PyObject, PyQt_PyObject, PyQt_PyObject)'),
-                action.dest, action.delete, action.specific)
+        self.sync.emit(action.dest, action.delete, action.specific)
 
     def trigger_default(self, *args):
         r = config['default_send_to_device_action']
@@ -813,12 +825,12 @@ class DeviceMenu(QMenu): # {{{
                     if action.dest == 'main:':
                         action.setEnabled(True)
                     elif action.dest == 'carda:0':
-                        if card_prefix and card_prefix[0] != None:
+                        if card_prefix and card_prefix[0] is not None:
                             action.setEnabled(True)
                         else:
                             action.setEnabled(False)
                     elif action.dest == 'cardb:0':
-                        if card_prefix and card_prefix[1] != None:
+                        if card_prefix and card_prefix[1] is not None:
                             action.setEnabled(True)
                         else:
                             action.setEnabled(False)
@@ -828,7 +840,7 @@ class DeviceMenu(QMenu): # {{{
 
     # }}}
 
-class DeviceSignals(QObject): # {{{
+class DeviceSignals(QObject):  # {{{
     #: This signal is emitted once, after metadata is downloaded from the
     #: connected device.
     #: The sequence: gui.device_manager.is_device_connected will become True,
@@ -847,7 +859,7 @@ class DeviceSignals(QObject): # {{{
 device_signals = DeviceSignals()
 # }}}
 
-class DeviceMixin(object): # {{{
+class DeviceMixin(object):  # {{{
 
     def __init__(self):
         self.device_error_dialog = error_dialog(self, _('Error'),
@@ -923,7 +935,8 @@ class DeviceMixin(object): # {{{
         self.device_manager.umount_device()
 
     def configure_connected_device(self):
-        if not self.device_manager.is_device_connected: return
+        if not self.device_manager.is_device_connected:
+            return
         if self.job_manager.has_device_jobs(queued_also=True):
             return error_dialog(self, _('Running jobs'),
                     _('Cannot configure the device while there are running'
@@ -960,9 +973,7 @@ class DeviceMixin(object): # {{{
         self._sync_menu = DeviceMenu(self)
         self.iactions['Send To Device'].qaction.setMenu(self._sync_menu)
         self.iactions['Connect Share'].build_email_entries()
-        self.connect(self._sync_menu,
-                SIGNAL('sync(PyQt_PyObject, PyQt_PyObject, PyQt_PyObject)'),
-                self.dispatch_sync_event)
+        self._sync_menu.sync.connect(self.dispatch_sync_event)
         self._sync_menu.fetch_annotations.connect(
                 self.iactions['Fetch Annotations'].fetch_annotations)
         self._sync_menu.disconnect_mounted_device.connect(self.disconnect_mounted_device)
@@ -1036,12 +1047,12 @@ class DeviceMixin(object): # {{{
         self.set_device_menu_items_state(connected)
         if connected:
             self.device_connected = device_kind
-            self.device_manager.get_device_information(\
+            self.device_manager.get_device_information(
                     FunctionDispatcher(self.info_read))
-            self.set_default_thumbnail(\
+            self.set_default_thumbnail(
                     self.device_manager.device.THUMBNAIL_HEIGHT)
-            self.status_bar.show_message(_('Device: ')+\
-                self.device_manager.device.get_gui_name()+\
+            self.status_bar.show_message(_('Device: ')+
+                self.device_manager.device.get_gui_name()+
                         _(' detected.'), 3000)
             self.library_view.set_device_connected(self.device_connected)
             self.refresh_ondevice(reset_only=True)
@@ -1078,8 +1089,14 @@ class DeviceMixin(object): # {{{
             self.device_job_exception(job)
             return
         self.device_manager.slow_driveinfo()
+
         # set_books_in_library might schedule a sync_booklists job
+        if DEBUG:
+            prints('DeviceJob: metadata_downloaded: Starting set_books_in_library')
         self.set_books_in_library(job.result, reset=True, add_as_step_to_job=job)
+
+        if DEBUG:
+            prints('DeviceJob: metadata_downloaded: updating views')
         mainlist, cardalist, cardblist = job.result
         self.memory_view.set_database(mainlist)
         self.memory_view.set_editable(self.device_manager.device.CAN_SET_METADATA,
@@ -1093,9 +1110,17 @@ class DeviceMixin(object): # {{{
         self.card_b_view.set_editable(self.device_manager.device.CAN_SET_METADATA,
                                       self.device_manager.device.BACKLOADING_ERROR_MESSAGE
                                       is None)
+        if DEBUG:
+            prints('DeviceJob: metadata_downloaded: syncing')
         self.sync_news()
         self.sync_catalogs()
+
+        if DEBUG:
+            prints('DeviceJob: metadata_downloaded: refreshing ondevice')
         self.refresh_ondevice()
+
+        if DEBUG:
+            prints('DeviceJob: metadata_downloaded: sending metadata_available signal')
         device_signals.device_metadata_available.emit()
 
     def refresh_ondevice(self, reset_only=False):
@@ -1186,7 +1211,7 @@ class DeviceMixin(object): # {{{
                 return
             if d.format():
                 fmt = d.format().lower()
-        dest, sub_dest = dest.split(':')
+        dest, sub_dest = dest.partition(':')[0::2]
         if dest in ('main', 'carda', 'cardb'):
             if not self.device_connected or not self.device_manager:
                 error_dialog(self, _('No device'),
@@ -1214,6 +1239,11 @@ class DeviceMixin(object): # {{{
             subject = ';'.join(sub_dest_parts[2:])
             fmts = [x.strip().lower() for x in fmts.split(',')]
             self.send_by_mail(to, fmts, delete, subject=subject)
+        elif dest == 'choosemail':
+            from calibre.gui2.email import select_recipients
+            data = select_recipients(self)
+            if data:
+                self.send_multiple_by_mail(data, delete)
 
     def cover_to_thumbnail(self, data):
         if self.device_manager.device and \
@@ -1229,7 +1259,8 @@ class DeviceMixin(object): # {{{
         ht = self.device_manager.device.THUMBNAIL_HEIGHT \
                 if self.device_manager else DevicePlugin.THUMBNAIL_HEIGHT
         try:
-            return thumbnail(data, ht, ht)
+            return thumbnail(data, ht, ht,
+                    compression_quality=self.device_manager.device.THUMBNAIL_COMPRESSION_QUALITY)
         except:
             pass
 
@@ -1238,7 +1269,8 @@ class DeviceMixin(object): # {{{
             settings = self.device_manager.device.settings()
             ids = list(dynamic.get('catalogs_to_be_synced', set([]))) if send_ids is None else send_ids
             ids = [id for id in ids if self.library_view.model().db.has_id(id)]
-            files, _auto_ids = self.library_view.model().get_preferred_formats_from_ids(
+            with BusyCursor():
+                files, _auto_ids = self.library_view.model().get_preferred_formats_from_ids(
                                 ids, settings.format_map,
                                 exclude_auto=do_auto_convert)
             auto = []
@@ -1275,21 +1307,18 @@ class DeviceMixin(object): # {{{
                 prefix = ascii_filename(prefix)
                 names.append('%s_%d%s'%(prefix, id,
                     os.path.splitext(f)[1]))
-                if mi.cover and os.access(mi.cover, os.R_OK):
-                    mi.thumbnail = self.cover_to_thumbnail(open(mi.cover,
-                        'rb').read())
+                self.update_thumbnail(mi)
             dynamic.set('catalogs_to_be_synced', set([]))
             if files:
                 remove = []
-                space = { self.location_manager.free[0] : None,
+                space = {self.location_manager.free[0] : None,
                     self.location_manager.free[1] : 'carda',
-                    self.location_manager.free[2] : 'cardb' }
+                    self.location_manager.free[2] : 'cardb'}
                 on_card = space.get(sorted(space.keys(), reverse=True)[0], None)
                 self.upload_books(files, names, metadata,
                         on_card=on_card,
                         memory=[files, remove])
                 self.status_bar.show_message(_('Sending catalogs to device.'), 5000)
-
 
     @dynamic_property
     def news_to_be_synced(self):
@@ -1314,14 +1343,14 @@ class DeviceMixin(object): # {{{
 
         return property(fget=fget, fset=fset, doc=doc)
 
-
     def sync_news(self, send_ids=None, do_auto_convert=True):
         if self.device_connected:
             del_on_upload = config['delete_news_from_library_on_upload']
             settings = self.device_manager.device.settings()
             ids = list(self.news_to_be_synced) if send_ids is None else send_ids
             ids = [id for id in ids if self.library_view.model().db.has_id(id)]
-            files, _auto_ids = self.library_view.model().get_preferred_formats_from_ids(
+            with BusyCursor():
+                files, _auto_ids = self.library_view.model().get_preferred_formats_from_ids(
                                 ids, settings.format_map,
                                 exclude_auto=do_auto_convert)
             auto = []
@@ -1358,15 +1387,13 @@ class DeviceMixin(object): # {{{
                 prefix = ascii_filename(prefix)
                 names.append('%s_%d%s'%(prefix, id,
                     os.path.splitext(f)[1]))
-                if mi.cover and os.access(mi.cover, os.R_OK):
-                    mi.thumbnail = self.cover_to_thumbnail(open(mi.cover,
-                        'rb').read())
+                self.update_thumbnail(mi)
             self.news_to_be_synced = set([])
             if config['upload_news_to_device'] and files:
                 remove = ids if del_on_upload else []
-                space = { self.location_manager.free[0] : None,
+                space = {self.location_manager.free[0] : None,
                     self.location_manager.free[1] : 'carda',
-                    self.location_manager.free[2] : 'cardb' }
+                    self.location_manager.free[2] : 'cardb'}
                 on_card = space.get(sorted(space.keys(), reverse=True)[0], None)
                 try:
                     total_size = sum([os.stat(f).st_size for f in files])
@@ -1389,10 +1416,9 @@ class DeviceMixin(object): # {{{
                         memory=[files, remove])
                 self.status_bar.show_message(_('Sending news to device.'), 5000)
 
-
     def sync_to_device(self, on_card, delete_from_library,
             specific_format=None, send_ids=None, do_auto_convert=True):
-        ids = [self.library_view.model().id(r) \
+        ids = [self.library_view.model().id(r)
                for r in self.library_view.selectionModel().selectedRows()] \
                                 if send_ids is None else send_ids
         if not self.device_manager or not ids or len(ids) == 0 or \
@@ -1401,7 +1427,8 @@ class DeviceMixin(object): # {{{
 
         settings = self.device_manager.device.settings()
 
-        _files, _auto_ids = self.library_view.model().get_preferred_formats_from_ids(ids,
+        with BusyCursor():
+            _files, _auto_ids = self.library_view.model().get_preferred_formats_from_ids(ids,
                                     settings.format_map,
                                     specific_format=specific_format,
                                     exclude_auto=do_auto_convert)
@@ -1414,8 +1441,7 @@ class DeviceMixin(object): # {{{
         metadata = self.library_view.model().metadata_for(ids)
         ids = iter(ids)
         for mi in metadata:
-            if mi.cover and os.access(mi.cover, os.R_OK):
-                mi.thumbnail = self.cover_to_thumbnail(open(mi.cover, 'rb').read())
+            self.update_thumbnail(mi)
         imetadata = iter(metadata)
 
         bad, good, gf, names, remove_ids = [], [], [], [], []
@@ -1446,11 +1472,12 @@ class DeviceMixin(object): # {{{
         auto = []
         if _auto_ids != []:
             for id in _auto_ids:
-                if specific_format == None:
+                if specific_format is None:
                     formats = self.library_view.model().db.formats(id, index_is_id=True)
                     formats = formats.split(',') if formats is not None else []
                     formats = [f.lower().strip() for f in formats]
-                    if list(set(formats).intersection(available_input_formats())) != [] and list(set(settings.format_map).intersection(available_output_formats())) != []:
+                    if (list(set(formats).intersection(available_input_formats())) != [] and
+                        list(set(settings.format_map).intersection(available_output_formats())) != []):
                         auto.append(id)
                     else:
                         bad.append(self.library_view.model().db.title(id, index_is_id=True))
@@ -1552,7 +1579,7 @@ class DeviceMixin(object): # {{{
             if isinstance(job.exception, FreeSpaceError):
                 where = 'in main memory.' if 'memory' in str(job.exception) \
                         else 'on the storage card.'
-                titles = '\n'.join(['<li>'+mi.title+'</li>' \
+                titles = '\n'.join(['<li>'+mi.title+'</li>'
                                     for mi in metadata])
                 d = error_dialog(self, _('No space on device'),
                                  _('<p>Cannot upload books to device there '
@@ -1604,6 +1631,10 @@ class DeviceMixin(object): # {{{
                 except:
                     pass
 
+    def update_metadata_on_device(self):
+        self.set_books_in_library(self.booklists(), reset=True, force_send=True)
+        self.refresh_ondevice()
+
     def book_on_device(self, id, reset=False):
         '''
         Return an indication of whether the given book represented by its db id
@@ -1652,7 +1683,14 @@ class DeviceMixin(object): # {{{
                 loc[4] |= self.book_db_uuid_path_map[id]
         return loc
 
-    def set_books_in_library(self, booklists, reset=False, add_as_step_to_job=None):
+    def update_thumbnail(self, book):
+        if book.cover and os.access(book.cover, os.R_OK):
+            book.thumbnail = self.cover_to_thumbnail(open(book.cover, 'rb').read())
+        else:
+            book.thumbnail = self.default_thumbnail
+
+    def set_books_in_library(self, booklists, reset=False, add_as_step_to_job=None,
+                             force_send=False):
         '''
         Set the ondevice indications in the device database.
         This method should be called before book_on_device is called, because
@@ -1675,7 +1713,8 @@ class DeviceMixin(object): # {{{
             x = x.lower() if x else ''
             return string_pat.sub('', x)
 
-        update_metadata = device_prefs['manage_device_metadata'] == 'on_connect'
+        update_metadata = (
+           device_prefs['manage_device_metadata'] == 'on_connect' or force_send)
 
         get_covers = False
         desired_thumbnail_height = 0
@@ -1710,12 +1749,7 @@ class DeviceMixin(object): # {{{
             self.db_book_title_cache = db_book_title_cache
             self.db_book_uuid_cache = db_book_uuid_cache
 
-        # Now iterate through all the books on the device, setting the
-        # in_library field. If the UUID matches a book in the library, then
-        # do not consider that book for other matching. In all cases set
-        # the application_id to the db_id of the matching book. This value
-        # will be used by books_on_device to indicate matches. While we are
-        # going by, update the metadata for a book if automatic management is on
+        book_ids_to_refresh = set()
 
         def update_book(id_, book) :
             if not update_metadata:
@@ -1723,89 +1757,143 @@ class DeviceMixin(object): # {{{
             mi = db.get_metadata(id_, index_is_id=True, get_cover=get_covers)
             book.smart_update(mi, replace_metadata=True)
             if get_covers and desired_thumbnail_height != 0:
-                if book.cover and os.access(book.cover, os.R_OK):
-                    book.thumbnail = self.cover_to_thumbnail(open(book.cover, 'rb').read())
-                else:
-                    book.thumbnail = self.default_thumbnail
+                self.update_thumbnail(book)
 
         def updateq(id_, book):
             try:
-                return (update_metadata and
-                        (db.metadata_last_modified(id_, index_is_id=True) !=
-                         getattr(book, 'last_modified', None) or
-                         (isinstance(getattr(book, 'thumbnail', None), (list, tuple))
-                          and max(book.thumbnail[0], book.thumbnail[1]) != desired_thumbnail_height
-                         )
+                if not update_metadata:
+                    return False
+
+                if self.device_manager.device is not None:
+                    set_of_ids = self.device_manager.device.synchronize_with_db(db, id_, book)
+                    if set_of_ids is not None:
+                        book_ids_to_refresh.update(set_of_ids)
+                        return True
+
+                return (db.metadata_last_modified(id_, index_is_id=True) !=
+                        getattr(book, 'last_modified', None) or
+                        (isinstance(getattr(book, 'thumbnail', None), (list, tuple))
+                         and max(book.thumbnail[0], book.thumbnail[1]) != desired_thumbnail_height
                         )
                        )
             except:
                 return True
 
+        # Now iterate through all the books on the device, setting the
+        # in_library field. If the UUID matches a book in the library, then
+        # do not consider that book for other matching. In all cases set
+        # the application_id to the db_id of the matching book. This value
+        # will be used by books_on_device to indicate matches. While we are
+        # going by, update the metadata for a book if automatic management is on
+
+        total_book_count = 0
         for booklist in booklists:
             for book in booklist:
-                book.in_library = None
-                if getattr(book, 'uuid', None) in self.db_book_uuid_cache:
-                    id_ = db_book_uuid_cache[book.uuid]
-                    if updateq(id_, book):
-                        update_book(id_, book)
-                    book.in_library = 'UUID'
-                    # ensure that the correct application_id is set
-                    book.application_id = id_
-                    continue
-                # No UUID exact match. Try metadata matching.
-                book_title = clean_string(book.title)
-                d = self.db_book_title_cache.get(book_title, None)
-                if d is not None:
-                    # At this point we know that the title matches. The book
-                    # will match if any of the db_id, author, or author_sort
-                    # also match.
-                    if getattr(book, 'application_id', None) in d['db_ids']:
-                        id_ = getattr(book, 'application_id', None)
-                        update_book(id_, book)
-                        book.in_library = 'APP_ID'
-                        # app_id already matches a db_id. No need to set it.
-                        continue
-                    # Sonys know their db_id independent of the application_id
-                    # in the metadata cache. Check that as well.
-                    if getattr(book, 'db_id', None) in d['db_ids']:
-                        update_book(book.db_id, book)
-                        book.in_library = 'DB_ID'
-                        book.application_id = book.db_id
-                        continue
-                    # We now know that the application_id is not right. Set it
-                    # to None to prevent book_on_device from accidentally
-                    # matching on it. It will be set to a correct value below if
-                    # the book is matched with one in the library
-                    book.application_id = None
-                    if book.authors:
-                        # Compare against both author and author sort, because
-                        # either can appear as the author
-                        book_authors = clean_string(authors_to_string(book.authors))
-                        if book_authors in d['authors']:
-                            id_ = d['authors'][book_authors]
-                            update_book(id_, book)
-                            book.in_library = 'AUTHOR'
-                            book.application_id = id_
-                        elif book_authors in d['author_sort']:
-                            id_ = d['author_sort'][book_authors]
-                            update_book(id_, book)
-                            book.in_library = 'AUTH_SORT'
-                            book.application_id = id_
-                else:
-                    # Book definitely not matched. Clear its application ID
-                    book.application_id = None
-                # Set author_sort if it isn't already
-                asort = getattr(book, 'author_sort', None)
-                if not asort and book.authors:
-                    book.author_sort = self.library_view.model().db.\
-                                author_sort_from_authors(book.authors)
+                if book:
+                    total_book_count += 1
+        if DEBUG:
+            prints('DeviceJob: set_books_in_library: books to process=', total_book_count)
 
-        if update_metadata:
-            if self.device_manager.is_device_connected:
-                plugboards = self.library_view.model().db.prefs.get('plugboards', {})
-                self.device_manager.sync_booklists(
-                                    FunctionDispatcher(self.metadata_synced), booklists,
-                                    plugboards, add_as_step_to_job)
+        start_time = time.time()
+
+        with BusyCursor():
+            current_book_count = 0
+            for booklist in booklists:
+                for book in booklist:
+                    if current_book_count % 100 == 0:
+                        self.status_bar.show_message(
+                                _('Analyzing books on the device: %d%% finished')%(
+                                    int((float(current_book_count)/total_book_count)*100.0)), show_notification=False)
+
+                    # I am assuming that this sort-of multi-threading won't break
+                    # anything. Reasons: excluding UI events prevents the user
+                    # from explicitly changing anything, and (in theory) no
+                    # changes are happening because of timers and the like.
+                    # Why every tenth book? WAG balancing performance in the
+                    # loop with preventing App Not Responding errors
+                    if current_book_count % 10 == 0:
+                        QCoreApplication.processEvents(flags=
+                               QEventLoop.ExcludeUserInputEvents|
+                                    QEventLoop.ExcludeSocketNotifiers)
+                    current_book_count += 1
+                    book.in_library = None
+                    if getattr(book, 'uuid', None) in self.db_book_uuid_cache:
+                        id_ = db_book_uuid_cache[book.uuid]
+                        if updateq(id_, book):
+                            update_book(id_, book)
+                        book.in_library = 'UUID'
+                        # ensure that the correct application_id is set
+                        book.application_id = id_
+                        continue
+                    # No UUID exact match. Try metadata matching.
+                    book_title = clean_string(book.title)
+                    d = self.db_book_title_cache.get(book_title, None)
+                    if d is not None:
+                        # At this point we know that the title matches. The book
+                        # will match if any of the db_id, author, or author_sort
+                        # also match.
+                        if getattr(book, 'application_id', None) in d['db_ids']:
+                            id_ = getattr(book, 'application_id', None)
+                            update_book(id_, book)
+                            book.in_library = 'APP_ID'
+                            # app_id already matches a db_id. No need to set it.
+                            continue
+                        # Sonys know their db_id independent of the application_id
+                        # in the metadata cache. Check that as well.
+                        if getattr(book, 'db_id', None) in d['db_ids']:
+                            update_book(book.db_id, book)
+                            book.in_library = 'DB_ID'
+                            book.application_id = book.db_id
+                            continue
+                        # We now know that the application_id is not right. Set it
+                        # to None to prevent book_on_device from accidentally
+                        # matching on it. It will be set to a correct value below if
+                        # the book is matched with one in the library
+                        book.application_id = None
+                        if book.authors:
+                            # Compare against both author and author sort, because
+                            # either can appear as the author
+                            book_authors = clean_string(authors_to_string(book.authors))
+                            if book_authors in d['authors']:
+                                id_ = d['authors'][book_authors]
+                                update_book(id_, book)
+                                book.in_library = 'AUTHOR'
+                                book.application_id = id_
+                            elif book_authors in d['author_sort']:
+                                id_ = d['author_sort'][book_authors]
+                                update_book(id_, book)
+                                book.in_library = 'AUTH_SORT'
+                                book.application_id = id_
+                    else:
+                        # Book definitely not matched. Clear its application ID
+                        book.application_id = None
+                    # Set author_sort if it isn't already
+                    asort = getattr(book, 'author_sort', None)
+                    if not asort and book.authors:
+                        book.author_sort = self.library_view.model().db.\
+                                    author_sort_from_authors(book.authors)
+
+            if update_metadata:
+                if self.device_manager.is_device_connected:
+                    plugboards = self.library_view.model().db.prefs.get('plugboards', {})
+                    self.device_manager.sync_booklists(
+                                FunctionDispatcher(self.metadata_synced), booklists,
+                                plugboards, add_as_step_to_job)
+
+            if book_ids_to_refresh:
+                try:
+                    prints('DeviceJob: set_books_in_library refreshing GUI for ',
+                           len(book_ids_to_refresh), 'books')
+                    self.library_view.model().refresh_ids(book_ids_to_refresh,
+                                      current_row=self.library_view.currentIndex().row())
+                except:
+                    # This shouldn't ever happen, but just in case ...
+                    traceback.print_exc()
+
+        if DEBUG:
+            prints('DeviceJob: set_books_in_library finished: time=',
+                   time.time() - start_time)
+        # The status line is reset when the job finishes
         return update_metadata
     # }}}
 

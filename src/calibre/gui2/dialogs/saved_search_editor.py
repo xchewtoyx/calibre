@@ -3,11 +3,9 @@ __license__   = 'GPL v3'
 __copyright__ = '2008, Kovid Goyal <kovid at kovidgoyal.net>'
 
 
-from PyQt4.QtCore import SIGNAL
 from PyQt4.QtGui import QDialog
 
 from calibre.gui2.dialogs.saved_search_editor_ui import Ui_SavedSearchEditor
-from calibre.utils.search_query_parser import saved_searches
 from calibre.utils.icu import sort_key
 from calibre.gui2 import error_dialog
 from calibre.gui2.dialogs.confirm_delete import confirm
@@ -15,21 +13,22 @@ from calibre.gui2.dialogs.confirm_delete import confirm
 class SavedSearchEditor(QDialog, Ui_SavedSearchEditor):
 
     def __init__(self, parent, initial_search=None):
+        from calibre.gui2.ui import get_gui
+        db = get_gui().current_db
         QDialog.__init__(self, parent)
         Ui_SavedSearchEditor.__init__(self)
         self.setupUi(self)
 
-        self.connect(self.add_search_button, SIGNAL('clicked()'), self.add_search)
-        self.connect(self.search_name_box, SIGNAL('currentIndexChanged(int)'),
-                                    self.current_index_changed)
-        self.connect(self.delete_search_button, SIGNAL('clicked()'), self.del_search)
+        self.add_search_button.clicked[()].connect(self.add_search)
+        self.search_name_box.currentIndexChanged[(int)].connect(self.current_index_changed)
+        self.delete_search_button.clicked[()].connect(self.del_search)
         self.rename_button.clicked.connect(self.rename_search)
 
         self.current_search_name = None
         self.searches = {}
-        for name in saved_searches().names():
-            self.searches[name] = saved_searches().lookup(name)
-        self.search_names = set([icu_lower(n) for n in saved_searches().names()])
+        for name in db.saved_search_names():
+            self.searches[name] = db.saved_search_lookup(name)
+        self.search_names = set([icu_lower(n) for n in db.saved_search_names()])
 
         self.populate_search_list()
         if initial_search is not None and initial_search in self.searches:
@@ -98,10 +97,10 @@ class SavedSearchEditor(QDialog, Ui_SavedSearchEditor):
             self.search_text.setPlainText('')
 
     def accept(self):
+        from calibre.gui2.ui import get_gui
+        db = get_gui().current_db
         if self.current_search_name:
             self.searches[self.current_search_name] = unicode(self.search_text.toPlainText())
-        for name in saved_searches().names():
-            saved_searches().delete(name)
-        for name in self.searches:
-            saved_searches().add(name, self.searches[name])
+        ss = {name:self.searches[name] for name in self.searches}
+        db.saved_search_set_all(ss)
         QDialog.accept(self)

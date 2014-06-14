@@ -20,6 +20,9 @@ _gravity_map = dict([(getattr(_magick, x), x) for x in dir(_magick) if
 _type_map = dict([(getattr(_magick, x), x) for x in dir(_magick) if
     x.endswith('Type')])
 
+_colorspace_map = dict([(getattr(_magick, x), x) for x in dir(_magick) if
+    x.endswith('Colorspace')])
+
 # Font metrics {{{
 class Rect(object):
 
@@ -60,12 +63,12 @@ class FontMetrics(object):
 
 # }}}
 
-class PixelWand(_magick.PixelWand): # {{{
+class PixelWand(_magick.PixelWand):  # {{{
     pass
 
 # }}}
 
-class DrawingWand(_magick.DrawingWand): # {{{
+class DrawingWand(_magick.DrawingWand):  # {{{
 
     @dynamic_property
     def font(self):
@@ -117,7 +120,7 @@ class DrawingWand(_magick.DrawingWand): # {{{
 
 # }}}
 
-class Image(_magick.Image): # {{{
+class Image(_magick.Image):  # {{{
 
     @property
     def clone(self):
@@ -126,9 +129,9 @@ class Image(_magick.Image): # {{{
         return ans
 
     def load(self, data):
-        data = bytes(data)
         if not data:
             raise ValueError('Cannot open image from empty data string')
+        data = bytes(data)
         return _magick.Image.load(self, data)
 
     def open(self, path_or_file):
@@ -165,6 +168,14 @@ class Image(_magick.Image): # {{{
             self.type_ = val
         return property(fget=fget, fset=fset, doc=_magick.Image.type_.__doc__)
 
+    @dynamic_property
+    def colorspace(self):
+        def fget(self):
+            return _colorspace_map[self.colorspace_]
+        def fset(self, val):
+            val = getattr(_magick, str(val))
+            self.colorspace_ = val
+        return property(fget=fget, fset=fset, doc=_magick.Image.type_.__doc__)
 
     @dynamic_property
     def size(self):
@@ -180,7 +191,6 @@ class Image(_magick.Image): # {{{
                 blur = float(val[3])
             self.size_ = (int(val[0]), int(val[1]), filter, blur)
         return property(fget=fget, fset=fset, doc=_magick.Image.size_.__doc__)
-
 
     def save(self, path, format=None):
         if format is None:
@@ -226,6 +236,13 @@ class Image(_magick.Image): # {{{
         colorspace = getattr(_magick, colorspace)
         _magick.Image.quantize(self, number_colors, colorspace, treedepth, dither,
                 measure_error)
+
+    def trim(self, fuzz):
+        try:
+            _magick.Image.remove_border(self, fuzz)
+        except AttributeError:
+            _magick.Image.trim(self, fuzz)
+
 
 # }}}
 

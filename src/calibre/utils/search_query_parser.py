@@ -40,7 +40,7 @@ class SavedSearchQueries(object):
             self.queries = {}
         try:
             self._db = weakref.ref(db)
-        except:
+        except TypeError:
             # db could be None
             self._db = lambda : None
 
@@ -76,6 +76,11 @@ class SavedSearchQueries(object):
             self.queries.pop(self.force_unicode(old_name), False)
             db.prefs[self.opt_name] = self.queries
 
+    def set_all(self, smap):
+        db = self.db
+        if db is not None:
+            self.queries = db.prefs[self.opt_name] = smap
+
     def names(self):
         return sorted(self.queries.keys(),key=sort_key)
 
@@ -92,6 +97,9 @@ def set_saved_searches(db, opt_name):
 def saved_searches():
     global ss
     return ss
+
+def global_lookup_saved_search(name):
+    return ss.lookup(name)
 
 '''
 Parse a search expression into a series of potentially recursive operations.
@@ -169,14 +177,17 @@ class Parser(object):
         def parse(self, expr, locations):
             self.locations = locations
 
-            # Strip out escaped backslashes and escaped quotes so that the
+            # Strip out escaped backslashes, quotes and parens so that the
             # lex scanner doesn't get confused. We put them back later.
             expr = expr.replace(u'\\\\', u'\x01').replace(u'\\"', u'\x02')
+            expr = expr.replace(u'\\(', u'\x03').replace(u'\\)', u'\x04')
             self.tokens = self.lex_scanner.scan(expr)[0]
             for (i,tok) in enumerate(self.tokens):
                 tt, tv = tok
                 if tt == self.WORD or tt == self.QUOTED_WORD:
-                    self.tokens[i] = (tt, tv.replace(u'\x01', u'\\').replace(u'\x02', u'"'))
+                    self.tokens[i] = (tt,
+                        tv.replace(u'\x01', u'\\').replace(u'\x02', u'"').
+                        replace(u'\x03', u'(').replace(u'\x04', u')'))
 
             self.current_token = 0
             prog = self.or_expression()
@@ -211,10 +222,10 @@ class Parser(object):
             return self.location_expression()
 
         def location_expression(self):
-            if self.token() == '(':
+            if self.token_type() == self.OPCODE and self.token() == '(':
                 self.advance()
                 res = self.or_expression()
-                if self.token(advance=True) != ')':
+                if self.token_type() != self.OPCODE or self.token(advance=True) != ')':
                     raise ParseException(_('missing )'))
                 return res
             if self.token_type() not in (self.WORD, self.QUOTED_WORD):
@@ -240,8 +251,8 @@ class Parser(object):
             # the search string is something like 'author: "foo"' because it
             # will be interpreted as 'author:"foo"'. I am choosing to accept the
             # possible error. The expression should be written '"author:" foo'
-            if len(words) > 1 and words[0] in self.locations:
-                loc = words[0]
+            if len(words) > 1 and words[0].lower() in self.locations:
+                loc = words[0].lower()
                 words = words[1:]
                 if len(words) == 1 and self.token_type() == self.QUOTED_WORD:
                     return ['token', loc, self.token(advance=True)]
@@ -292,24 +303,28 @@ class SearchQueryParser(object):
                 failed.append(test[0])
         return failed
 
-    def __init__(self, locations, test=False, optimize=False):
+    def __init__(self, locations, test=False, optimize=False, lookup_saved_search=None, parse_cache=None):
         self.sqp_initialize(locations, test=test, optimize=optimize)
         self.parser = Parser()
+        self.lookup_saved_search = global_lookup_saved_search if lookup_saved_search is None else lookup_saved_search
+        self.sqp_parse_cache = parse_cache
 
     def sqp_change_locations(self, locations):
         self.sqp_initialize(locations, optimize=self.optimize)
+        if self.sqp_parse_cache is not None:
+            self.sqp_parse_cache.clear()
 
     def sqp_initialize(self, locations, test=False, optimize=False):
         self.locations = locations
         self._tests_failed = False
         self.optimize = optimize
 
-    def parse(self, query):
+    def parse(self, query, candidates=None):
         # empty the list of searches used for recursion testing
         self.recurse_level = 0
         self.searches_seen = set([])
         candidates = self.universal_set()
-        return self._parse(query, candidates)
+        return self._parse(query, candidates=candidates)
 
     # this parse is used internally because it doesn't clear the
     # recursive search test list. However, we permit seeing the
@@ -318,9 +333,16 @@ class SearchQueryParser(object):
     def _parse(self, query, candidates=None):
         self.recurse_level += 1
         try:
-            res = self.parser.parse(query, self.locations)
-        except RuntimeError:
-            raise ParseException(_('Failed to parse query, recursion limit reached: %s')%repr(query))
+            res = self.sqp_parse_cache.get(query, None)
+        except AttributeError:
+            res = None
+        if res is None:
+            try:
+                res = self.parser.parse(query, self.locations)
+            except RuntimeError:
+                raise ParseException(_('Failed to parse query, recursion limit reached: %s')%repr(query))
+            if self.sqp_parse_cache is not None:
+                self.sqp_parse_cache[query] = res
         if candidates is None:
             candidates = self.universal_set()
         t = self.evaluate(res, candidates)
@@ -367,7 +389,7 @@ class SearchQueryParser(object):
                     raise ParseException(_('Recursive saved search: {0}').format(query))
                 if self.recurse_level > 5:
                     self.searches_seen.add(query)
-                return self._parse(saved_searches().lookup(query), candidates)
+                return self._parse(self.lookup_saved_search(query), candidates)
             except ParseException as e:
                 raise e
             except:  # convert all exceptions (e.g., missing key) to a parse error
@@ -697,6 +719,7 @@ class Tester(SearchQueryParser):
     tests = {
              'Dysfunction' : set([348]),
              'title:Dysfunction' : set([348]),
+             'Title:Dysfunction' : set([348]),
              'title:Dysfunction OR author:Laurie': set([348, 444]),
              '(tag:txt or tag:pdf)': set([33, 258, 354, 305, 242, 51, 55, 56, 154]),
              '(tag:txt OR tag:pdf) and author:Tolstoy': set([55, 56]),

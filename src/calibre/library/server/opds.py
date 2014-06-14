@@ -22,6 +22,7 @@ from calibre.library.server import custom_fields_to_display
 from calibre.library.server.utils import format_tag_string, Offsets
 from calibre import guess_type, prepare_string_for_xml as xml
 from calibre.utils.icu import sort_key
+from calibre.utils.date import as_utc
 
 BASE_HREFS = {
         0 : '/stanza',
@@ -58,7 +59,7 @@ ID      = E.id
 ICON    = E.icon
 
 def UPDATED(dt, *args, **kwargs):
-    return E.updated(dt.strftime('%Y-%m-%dT%H:%M:%S+00:00'), *args, **kwargs)
+    return E.updated(as_utc(dt).strftime('%Y-%m-%dT%H:%M:%S+00:00'), *args, **kwargs)
 
 LINK = partial(E.link, type='application/atom+xml')
 NAVLINK = partial(E.link,
@@ -125,7 +126,7 @@ def CATALOG_ENTRY(item, item_kind, base_href, version, updated,
     if item.id is not None:
         iid = 'I' + str(item.id)
         iid += ':'+item_kind
-    link = NAVLINK(href = base_href + '/' + hexlify(iid))
+    link = NAVLINK(href=base_href + '/' + hexlify(iid))
     count = (_('%d books') if item.count > 1 else _('%d book'))%item.count
     if ignore_count:
         count = ''
@@ -144,7 +145,7 @@ def CATALOG_ENTRY(item, item_kind, base_href, version, updated,
 def CATALOG_GROUP_ENTRY(item, category, base_href, version, updated):
     id_ = 'calibre:category-group:'+category+':'+item.text
     iid = item.text
-    link = NAVLINK(href = base_href + '/' + hexlify(iid))
+    link = NAVLINK(href=base_href + '/' + hexlify(iid))
     return E.entry(
             TITLE(item.text),
             ID(id_),
@@ -175,7 +176,7 @@ def ACQUISITION_ENTRY(item, version, db, updated, CFM, CKEYS, prefix):
                                                            no_tag_count=True)))
     series = item[FM['series']]
     if series:
-        extra.append(_('SERIES: %(series)s [%(sidx)s]<br />')%\
+        extra.append(_('SERIES: %(series)s [%(sidx)s]<br />')%
                 dict(series=xml(series),
                 sidx=fmt_sidx(float(item[FM['series_index']]))))
     for key in CKEYS:
@@ -230,17 +231,19 @@ def ACQUISITION_ENTRY(item, version, db, updated, CFM, CKEYS, prefix):
 
 # }}}
 
-class Feed(object): # {{{
+default_feed_title = __appname__ + ' ' + _('Library')
+
+class Feed(object):  # {{{
 
     def __init__(self, id_, updated, version, subtitle=None,
-            title=__appname__ + ' ' + _('Library'),
+            title=None,
             up_link=None, first_link=None, last_link=None,
             next_link=None, previous_link=None):
         self.base_href = url_for('opds', version)
 
         self.root = \
             FEED(
-                    TITLE(title),
+                    TITLE(title or default_feed_title),
                     AUTHOR(__appname__, uri='http://calibre-ebook.com'),
                     ID(id_),
                     ICON('/favicon.png'),
@@ -266,14 +269,14 @@ class Feed(object): # {{{
                 xml_declaration=True)
     # }}}
 
-class TopLevel(Feed): # {{{
+class TopLevel(Feed):  # {{{
 
     def __init__(self,
             updated,  # datetime object in UTC
             categories,
             version,
-            id_       = 'urn:calibre:main',
-            subtitle  = _('Books in your library')
+            id_='urn:calibre:main',
+            subtitle=_('Books in your library')
             ):
         Feed.__init__(self, id_, updated, version, subtitle=subtitle)
 
@@ -288,7 +291,7 @@ class TopLevel(Feed): # {{{
 
 class NavFeed(Feed):
 
-    def __init__(self, id_, updated, version, offsets, page_url, up_url):
+    def __init__(self, id_, updated, version, offsets, page_url, up_url, title=None):
         kwargs = {'up_link': up_url}
         kwargs['first_link'] = page_url
         kwargs['last_link']  = page_url+'?offset=%d'%offsets.last_offset
@@ -298,13 +301,15 @@ class NavFeed(Feed):
         if offsets.next_offset > -1:
             kwargs['next_link'] = \
                 page_url+'?offset=%d'%offsets.next_offset
+        if title:
+            kwargs['title'] = title
         Feed.__init__(self, id_, updated, version, **kwargs)
 
 class AcquisitionFeed(NavFeed):
 
     def __init__(self, updated, id_, items, offsets, page_url, up_url, version,
-            db, prefix):
-        NavFeed.__init__(self, id_, updated, version, offsets, page_url, up_url)
+            db, prefix, title=None):
+        NavFeed.__init__(self, id_, updated, version, offsets, page_url, up_url, title=title)
         CFM = db.field_metadata
         CKEYS = [key for key in sorted(custom_fields_to_display(db),
                                        key=lambda x: sort_key(CFM[x]['name']))]
@@ -314,8 +319,8 @@ class AcquisitionFeed(NavFeed):
 
 class CategoryFeed(NavFeed):
 
-    def __init__(self, items, which, id_, updated, version, offsets, page_url, up_url, db):
-        NavFeed.__init__(self, id_, updated, version, offsets, page_url, up_url)
+    def __init__(self, items, which, id_, updated, version, offsets, page_url, up_url, db, title=None):
+        NavFeed.__init__(self, id_, updated, version, offsets, page_url, up_url, title=title)
         base_href = self.base_href + '/category/' + hexlify(which)
         ignore_count = False
         if which == 'search':
@@ -327,12 +332,11 @@ class CategoryFeed(NavFeed):
 
 class CategoryGroupFeed(NavFeed):
 
-    def __init__(self, items, which, id_, updated, version, offsets, page_url, up_url):
-        NavFeed.__init__(self, id_, updated, version, offsets, page_url, up_url)
+    def __init__(self, items, which, id_, updated, version, offsets, page_url, up_url, title=None):
+        NavFeed.__init__(self, id_, updated, version, offsets, page_url, up_url, title=title)
         base_href = self.base_href + '/categorygroup/' + hexlify(which)
         for item in items:
             self.root.append(CATALOG_GROUP_ENTRY(item, which, base_href, version, updated))
-
 
 
 class OPDSServer(object):
@@ -359,7 +363,7 @@ class OPDSServer(object):
         return ids
 
     def get_opds_acquisition_feed(self, ids, offset, page_url, up_url, id_,
-            sort_by='title', ascending=True, version=0):
+            sort_by='title', ascending=True, version=0, feed_title=None):
         idx = self.db.FIELD_MAP['id']
         ids &= self.get_opds_allowed_ids_for_version(version)
         if not ids:
@@ -374,7 +378,7 @@ class OPDSServer(object):
         cherrypy.response.headers['Content-Type'] = 'application/atom+xml;profile=opds-catalog'
         return str(AcquisitionFeed(updated, id_, items, offsets,
                                    page_url, up_url, version, self.db,
-                                   self.opts.url_prefix))
+                                   self.opts.url_prefix, title=feed_title))
 
     def opds_search(self, query=None, version=0, offset=0):
         try:
@@ -403,10 +407,12 @@ class OPDSServer(object):
             raise cherrypy.HTTPError(404, 'Not found')
         sort = 'timestamp' if which == 'newest' else 'title'
         ascending = which == 'title'
+        feed_title = {'newest':_('Newest'), 'title': _('Title')}.get(which, which)
+        feed_title = default_feed_title + ' :: ' + _('By %s') % feed_title
         ids = self.get_opds_allowed_ids_for_version(version)
         return self.get_opds_acquisition_feed(ids, offset, page_url, up_url,
                 id_='calibre-all:'+sort, sort_by=sort, ascending=ascending,
-                version=version)
+                version=version, feed_title=feed_title)
 
     # Categories {{{
 
@@ -427,7 +433,11 @@ class OPDSServer(object):
         category = unhexlify(category)
         if category not in categories:
             raise cherrypy.HTTPError(404, 'Category %r not found'%which)
+        category_meta = self.db.field_metadata
+        meta = category_meta.get(category, {})
+        category_name = meta.get('name', which)
         which = unhexlify(which)
+        feed_title = default_feed_title + ' :: ' + (_('By {0} :: {1}').format(category_name, which))
         owhich = hexlify('N'+which)
         up_url = url_for('opdsnavcatalog', version, which=owhich)
         items = categories[category]
@@ -449,8 +459,7 @@ class OPDSServer(object):
         cherrypy.response.headers['Content-Type'] = 'application/atom+xml'
 
         return str(CategoryFeed(items, category, id_, updated, version, offsets,
-            page_url, up_url, self.db))
-
+            page_url, up_url, self.db, title=feed_title))
 
     def opds_navcatalog(self, which=None, version=0, offset=0):
         try:
@@ -482,6 +491,10 @@ class OPDSServer(object):
 
         items = categories[which]
         updated = self.db.last_modified()
+        category_meta = self.db.field_metadata
+        meta = category_meta.get(which, {})
+        category_name = meta.get('name', which)
+        feed_title = default_feed_title + ' :: ' + _('By %s') % category_name
 
         id_ = 'calibre-category-feed:'+which
 
@@ -492,7 +505,7 @@ class OPDSServer(object):
             offsets = Offsets(offset, max_items, len(items))
             items = list(items)[offsets.offset:offsets.offset+max_items]
             ans = CategoryFeed(items, which, id_, updated, version, offsets,
-                page_url, up_url, self.db)
+                page_url, up_url, self.db, title=feed_title)
         else:
             class Group:
                 def __init__(self, text, count):
@@ -513,7 +526,7 @@ class OPDSServer(object):
             offsets = Offsets(offset, max_items, len(items))
             items = items[offsets.offset:offsets.offset+max_items]
             ans = CategoryGroupFeed(items, which, id_, updated, version, offsets,
-                page_url, up_url)
+                page_url, up_url, title=feed_title)
 
         cherrypy.response.headers['Last-Modified'] = self.last_modified(updated)
         cherrypy.response.headers['Content-Type'] = 'application/atom+xml'
@@ -540,9 +553,14 @@ class OPDSServer(object):
             try:
                 p = which.index(':')
                 category = which[p+1:]
+                which = which[:p]
+                # This line will toss an exception for composite columns
                 which = int(which[:p])
             except:
-                raise cherrypy.HTTPError(404, 'Tag %r not found'%which)
+                # Might be a composite column, where we have the lookup key
+                if not (category in self.db.field_metadata and
+                        self.db.field_metadata[category]['datatype'] == 'composite'):
+                    raise cherrypy.HTTPError(404, 'Tag %r not found'%which)
 
         categories = self.categories_cache(
                 self.get_opds_allowed_ids_for_version(version))
@@ -562,7 +580,8 @@ class OPDSServer(object):
             raise cherrypy.HTTPError(404, 'Non id categories not supported')
 
         q = category
-        if q == 'news': q = 'tags'
+        if q == 'news':
+            q = 'tags'
         ids = self.db.get_books_for_category(q, which)
         sort_by = 'series' if category == 'series' else 'title'
 
@@ -571,7 +590,6 @@ class OPDSServer(object):
                 version=version, sort_by=sort_by)
 
     # }}}
-
 
     def opds(self, version=0):
         version = int(version)
@@ -585,7 +603,10 @@ class OPDSServer(object):
                 (_('Title'), _('Title'), 'Otitle'),
                 ]
         def getter(x):
-            return category_meta[x]['name'].lower()
+            try:
+                return category_meta[x]['name'].lower()
+            except KeyError:
+                return x
         for category in sorted(categories, key=lambda x: sort_key(getter(x))):
             if len(categories[category]) == 0:
                 continue

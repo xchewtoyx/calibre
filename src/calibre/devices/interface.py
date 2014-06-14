@@ -43,6 +43,11 @@ class DevicePlugin(Plugin):
     #: than THUMBNAIL_HEIGHT
     # THUMBNAIL_WIDTH = 68
 
+    #: Compression quality for thumbnails. Set this closer to 100 to have better
+    #: quality thumbnails with fewer compression artifacts. Of course, the
+    #: thumbnails get larger as well.
+    THUMBNAIL_COMPRESSION_QUALITY = 75
+
     #: Set this to True if the device supports updating cover thumbnails during
     #: sync_booklists. Setting it to true will ask device.py to refresh the
     #: cover thumbnails during book matching
@@ -712,6 +717,27 @@ class DevicePlugin(Plugin):
         this method must be thread safe.
         '''
         return False
+
+    def synchronize_with_db(self, db, book_id, book_metadata):
+        '''
+        Called during book matching when a book on the device is matched with
+        a book in calibre's db. The method is responsible for syncronizing
+        data from the device to calibre's db (if needed).
+
+        The method must return a set of calibre book ids changed if calibre's
+        database was changed, None if the database was not changed. If the
+        method returns an empty set then the metadata for the book on the
+        device is updated with calibre's metadata and given back to the device,
+        but no GUI refresh of that book is done. This is useful when the calire
+        data is correct but must be sent to the device.
+
+        Extremely important: this method is called on the GUI thread. It must
+        be threadsafe with respect to the device manager's thread.
+
+        book_id: the calibre id for the book in the database.
+        book_metadata: the Metadata object for the book coming from the device.
+        '''
+        return None
 
 class BookList(list):
     '''

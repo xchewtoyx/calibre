@@ -38,12 +38,13 @@ XLINK_NS     = 'http://www.w3.org/1999/xlink'
 CALIBRE_NS   = 'http://calibre.kovidgoyal.net/2009/metadata'
 RE_NS        = 'http://exslt.org/regular-expressions'
 MBP_NS       = 'http://www.mobipocket.com'
+EPUB_NS      = 'http://www.idpf.org/2007/ops'
 
 XPNSMAP      = {'h': XHTML_NS, 'o1': OPF1_NS, 'o2': OPF2_NS,
                 'd09': DC09_NS, 'd10': DC10_NS, 'd11': DC11_NS,
                 'xsi': XSI_NS, 'dt': DCTERMS_NS, 'ncx': NCX_NS,
                 'svg': SVG_NS, 'xl': XLINK_NS, 're': RE_NS,
-                'mbp': MBP_NS, 'calibre': CALIBRE_NS}
+                'mbp': MBP_NS, 'calibre': CALIBRE_NS, 'epub':EPUB_NS}
 
 OPF1_NSMAP   = {'dc': DC11_NS, 'oebpackage': OPF1_NS}
 OPF2_NSMAP   = {'opf': OPF2_NS, 'dc': DC11_NS, 'dcterms': DCTERMS_NS,
@@ -88,7 +89,7 @@ self_closing_bad_tags = {'a', 'abbr', 'address', 'article', 'aside', 'audio', 'b
 'label', 'legend', 'li', 'map', 'mark', 'meter', 'nav', 'ol', 'output', 'p',
 'pre', 'progress', 'q', 'rp', 'rt', 'samp', 'section', 'select', 'small',
 'span', 'strong', 'sub', 'summary', 'sup', 'textarea', 'time', 'ul', 'var',
-'video'}
+'video', 'title', 'script', 'style'}
 
 _self_closing_pat = re.compile(
     r'<(?P<tag>%s)(?=[\s/])(?P<arg>[^>]*)/>'%('|'.join(self_closing_bad_tags)),
@@ -100,6 +101,12 @@ def close_self_closing_tags(raw):
 def uuid_id():
     return 'u'+unicode(uuid.uuid4())
 
+def itercsslinks(raw):
+    for match in _css_url_re.finditer(raw):
+        yield match.group(1), match.start(1)
+    for match in _css_import_re.finditer(raw):
+        yield match.group(1), match.start(1)
+
 def iterlinks(root, find_links_in_css=True):
     '''
     Iterate over all links in a OEB Document.
@@ -107,8 +114,7 @@ def iterlinks(root, find_links_in_css=True):
     :param root: A valid lxml.etree element.
     '''
     assert etree.iselement(root)
-    link_attrs = set(html.defs.link_attrs)
-    link_attrs.add(XLINK('href'))
+    link_attrs = set(html.defs.link_attrs) | {XLINK('href'), 'poster'}
 
     for el in root.iter():
         attribs = el.attrib
@@ -119,8 +125,8 @@ def iterlinks(root, find_links_in_css=True):
 
         if tag == XHTML('object'):
             codebase = None
-            ## <object> tags have attributes that are relative to
-            ## codebase
+            # <object> tags have attributes that are relative to
+            # codebase
             if 'codebase' in attribs:
                 codebase = el.get('codebase')
                 yield (el, 'codebase', codebase, 0)
@@ -320,6 +326,11 @@ def xpath(elem, expr):
     return elem.xpath(expr, namespaces=XPNSMAP)
 
 def xml2str(root, pretty_print=False, strip_comments=False, with_tail=True):
+    if not strip_comments:
+        # -- in comments trips up adobe digital editions
+        for x in root.iterdescendants(etree.Comment):
+            if x.text and '--' in x.text:
+                x.text = x.text.replace('--', '__')
     ans = etree.tostring(root, encoding='utf-8', xml_declaration=True,
                           pretty_print=pretty_print, with_tail=with_tail)
 
@@ -593,8 +604,8 @@ class Metadata(object):
                 allowed = self.allowed
                 if allowed is not None and term not in allowed:
                     raise AttributeError(
-                        'attribute %r not valid for metadata term %r'
-                            % (self.attr(term), barename(obj.term)))
+                        'attribute %r not valid for metadata term %r' % (
+                            self.attr(term), barename(obj.term)))
                 return self.attr(term)
 
             def __get__(self, obj, cls):
@@ -1210,6 +1221,7 @@ class Spine(object):
     def __init__(self, oeb):
         self.oeb = oeb
         self.items = []
+        self.page_progression_direction = None
 
     def _linear(self, linear):
         if isinstance(linear, basestring):
@@ -1896,4 +1908,6 @@ class OEBBook(object):
                              attrib={'media-type': PAGE_MAP_MIME})
             spine.attrib['page-map'] = id
             results[PAGE_MAP_MIME] = (href, self.pages.to_page_map())
+        if self.spine.page_progression_direction in {'ltr', 'rtl'}:
+            spine.attrib['page-progression-direction'] = self.spine.page_progression_direction
         return results

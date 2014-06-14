@@ -53,6 +53,8 @@ Add books
 
     3. **Add books from directories, including sub-directories (Multiple books per directory, assumes every ebook file is a different book)**: Allows you to choose a directory. The directory and all its sub-directories are scanned recursively and any ebooks found are added to the library. |app| assumes that each directory contains many books. All ebook files with the same name in a directory are assumed to be the same book in different formats. Ebooks with different names are added as different books. 
 
+    4. **Add multiple books from archive (ZIP/RAR)**: Allows you to add multiple ebooks that are stored inside a single ZIP or RAR file. It is a convenient shortcut that avoids having to first unzip the archive and then add the books via one of the above two options.
+
     4. **Add empty book. (Book Entry with no formats)**: Allows you to create a blank book record. This can be used to then manually fill out the information about a book that you may not have yet in your collection.
 
     5. **Add from ISBN**: Allows you to add one or more books by entering their ISBNs.
@@ -62,7 +64,13 @@ Add books
 The :guilabel:`Add books` action can read metadata from a wide variety of ebook formats. In addition, it tries to guess metadata from the filename.
 See the :ref:`config_filename_metadata` section, to learn how to configure this.
 
-To add an additional format for an existing book use the :ref:`edit_meta_information` action.
+To add an additional format for an existing book you can do any of three things:
+
+    1. Drag and drop the file onto the book details panel on the right side of the main window
+           
+    2. Right click the Add books button and choose :guilabel`:Add files to selected books`.
+           
+    3. Click the red add books button in the top right area of the :guilabel:`Edit Metadata` dialog, accessed by the :ref:`edit_meta_information` action.
 
 .. _edit_meta_information:
 
@@ -401,7 +409,7 @@ You can search for the absence or presence of a field using the special "true" a
 Yes/no custom columns are searchable. Searching for ``false``, ``empty``, or ``blank`` will find all books
 with undefined values in the column. Searching for ``true`` will find all books that do not have undefined
 values in the column. Searching for ``yes`` or ``checked`` will find all books with ``Yes`` in the column.
-Searching for ``no`` or ``unchecked`` will find all books with ``No`` in the column. Note that the words ``yes``, ``no``, ``blank``, ``empty``, ``checked`` and ``unchecked`` are translated; you must use the current language's equivalent word. The words ``true`` and ``false`` and the special values ``_yes`` and ``_no`` are not translated.
+Searching for ``no`` or ``unchecked`` will find all books with ``No`` in the column. Note that the words ``yes``, ``no``, ``blank``, ``empty``, ``checked`` and ``unchecked`` are translated; you can use either the current language's equivalent word or the English word. The words ``true`` and ``false`` and the special values ``_yes``, ``_no``, and ``_empty`` are not translated.
 
 Hierarchical items (e.g. A.B.C) use an extended syntax to match initial parts of the hierarchy. This is done by adding a period between the exact match indicator (=) and the text. For example, the query ``tags:=.A`` will find the tags `A` and `A.B`, but will not find the tags `AA` or `AA.B`. The query ``tags:=.A.B`` will find the tags `A.B` and `A.B.C`, but not the tag `A`.
 
@@ -504,6 +512,11 @@ There is a search bar at the top of the Tag Browser that allows you to easily fi
 
 You can control how items are sorted in the Tag browser via the box at the bottom of the Tag Browser. You can choose to sort by name, average rating or popularity (popularity is the number of books with an item in your library; for example, the popularity of Isaac Asimov is the number of books in your library by Isaac Asimov).
 
+.. raw:: html epub
+    
+    <div style="clear:both"></div>
+
+
 Quickview
 ----------
 
@@ -529,12 +542,20 @@ You can see if a column can be Quickview'ed by hovering your mouse over the colu
 
 Quickview respects the virtual library setting, showing only books in the current virtual library.
 
+.. raw:: html epub
+    
+    <div style="clear:both"></div>
+
 Jobs
 -----
 .. image:: images/jobs.png
     :class: float-left-img
 
 The Jobs panel shows the number of currently running jobs. Jobs are tasks that run in a separate process. They include converting ebooks and talking to your reader device. You can click on the jobs panel to access the list of jobs. Once a job has completed you can see a detailed log from that job by double-clicking it in the list. This is useful to debug jobs that may not have completed successfully.
+
+.. raw:: html epub
+    
+    <div style="clear:both"></div>
 
 Keyboard Shortcuts
 ---------------------
@@ -593,6 +614,8 @@ Calibre has several keyboard shortcuts to save you time and mouse movement. Thes
       - Toggle Book Details panel
     * - :kbd:`Alt+Shift+T`
       - Toggle Tag Browser
+    * - :kbd:`Alt+Shift+G`
+      - Toggle Cover Grid
     * - :kbd:`Alt+A`
       - Show books by the same author as the current book
     * - :kbd:`Alt+T`
@@ -613,6 +636,8 @@ Calibre has several keyboard shortcuts to save you time and mouse movement. Thes
       - Clear the virtual library
     * - :kbd:`Alt+Esc`
       - Clear the additional restriction
+    * - :kbd:`Ctrl+*`
+      - Create a temporary virtual library based on the current search
     * - :kbd:`N or F3`
       - Find the next book that matches the current search (only works if the highlight checkbox next to the search bar is checked)
     * - :kbd:`Shift+N or Shift+F3`

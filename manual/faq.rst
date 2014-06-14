@@ -51,24 +51,31 @@ How do I convert my file containing non-English characters, or smart quotes?
 There are two aspects to this problem:
   1. Knowing the encoding of the source file: |app| tries to guess what character encoding your source files use, but often, this is impossible, so you need to tell it what encoding to use. This can be done in the GUI via the :guilabel:`Input character encoding` field in the :guilabel:`Look & Feel` section. The command-line tools all have an :option:`--input-encoding` option.
   2. When adding HTML files to |app|, you may need to tell |app| what encoding the files are in. To do this go to :guilabel:`Preferences->Advanced->Plugins->File Type plugins` and customize the HTML2Zip plugin, telling it what encoding your HTML files are in. Now when you add HTML files to |app| they will be correctly processed. HTML files from different sources often have different encodings, so you may have to change this setting repeatedly. A common encoding for many files from the web is ``cp1252`` and I would suggest you try that first. Note that when converting HTML files, leave the input encoding setting mentioned above blank. This is because the HTML2ZIP plugin automatically converts the HTML files to a standard encoding (utf-8).
-  3. Embedding fonts: If you are generating an LRF file to read on your SONY Reader, you are limited by the fact that the Reader only supports a few non-English characters in the fonts it comes pre-loaded with. You can work around this problem by embedding a unicode-aware font that supports the character set your file uses into the LRF file. You should embed atleast a serif and a sans-serif font. Be aware that embedding fonts significantly slows down page-turn speed on the reader.
 
 What's the deal with Table of Contents in MOBI files?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The first thing to realize is that most ebooks have two tables of contents. One is the traditional Table of Contents, like the TOC you find in paper books. This Table of Contents is part of the main document flow and can be styled however you like. This TOC is called the *content TOC*.
+The first thing to realize is that most ebooks have two tables of contents. One is the traditional Table of Contents, like the ToC you find in paper books. This Table of Contents is part of the main document flow and can be styled however you like. This ToC is called the *content ToC*.
 
-Then there is the *metadata TOC*. A metadata TOC is a TOC that is not part of the book text and is typically accessed by some special button on a reader. For example, in the calibre viewer, you use the Show Table of Contents button to see this TOC. This TOC cannot be styled by the book creator. How it is represented is up to the viewer program.
+Then there is the *metadata ToC*. A metadata ToC is a ToC that is not part of the book text and is typically accessed by some special button on a reader. For example, in the calibre viewer, you use the Show Table of Contents button to see this ToC. This ToC cannot be styled by the book creator. How it is represented is up to the viewer program.
 
-In the MOBI format, the situation is a little confused. This is because the MOBI format, alone amongst mainstream ebook formats, *does not* have decent support for a metadata TOC. A MOBI book simulates the presence of a metadata TOC by putting an *extra* content TOC at the end of the book. When you click Goto Table of Contents on your Kindle, it is to this extra content TOC that the Kindle takes you. 
+In the MOBI format, the situation is a little confused. This is because the MOBI format, alone amongst mainstream ebook formats, *does not* have decent support for a metadata ToC. A MOBI book simulates the presence of a metadata ToC by putting an *extra* content ToC at the end of the book. When you click Goto Table of Contents on your Kindle, it is to this extra content ToC that the Kindle takes you. 
 
-Now it might well seem to you that the MOBI book has two identical TOCs. Remember that one is semantically a content TOC and the other is a metadata TOC, even though both might have exactly the same entries and look the same. One can be accessed directly from the Kindle's menus, the other cannot. 
+Now it might well seem to you that the MOBI book has two identical ToCs. Remember that one is semantically a content ToC and the other is a metadata ToC, even though both might have exactly the same entries and look the same. One can be accessed directly from the Kindle's menus, the other cannot. 
 
-When converting to MOBI, calibre detects the *metadata TOC* in the input document and generates an end-of-file TOC in the output MOBI file. You can turn this off by an option in the MOBI Output settings. You can also tell calibre whether to put it and the start or the end of the book via an option in the MOBI Output settings. Remember this TOC is semantically a *metadata TOC*, in any format other than MOBI it *cannot not be part of the text*. The fact that it is part of the text in MOBI is an accident caused by the limitations of MOBI. If you want a TOC at a particular location in your document text, create one by hand. So we strongly recommend that you leave the default as it is, i.e. with the metadata TOC at the end of the book.
+When converting to MOBI, calibre detects the *metadata ToC* in the input document and generates an end-of-file ToC in the output MOBI file. You can turn this off by an option in the MOBI Output settings. You can also tell calibre whether to put it and the start or the end of the book via an option in the MOBI Output settings. Remember this ToC is semantically a *metadata ToC*, in any format other than MOBI it *cannot not be part of the text*. The fact that it is part of the text in MOBI is an accident caused by the limitations of MOBI. If you want a ToC at a particular location in your document text, create one by hand. So we strongly recommend that you leave the default as it is, i.e. with the metadata ToC at the end of the book. Also note that if you disable the generation of the end-of-file ToC the resulting MOBI file may not function correctly on a Kindle, since the Kindle's use the metadata ToC for many things, including the Page Flip feature.
 
-If you have a hand edited TOC in the input document, you can use the TOC detection options in calibre to automatically generate the metadata TOC from it. See the conversion section of the User Manual for more details on how to use these options.
+If you have a hand edited ToC in the input document, you can use the ToC detection options in calibre to automatically generate the metadata ToC from it. See the conversion section of the User Manual for more details on how to use these options.
 
-Finally, I encourage you to ditch the content TOC and only have a metadata TOC in your ebooks. Metadata TOCs will give the people reading your ebooks a much superior navigation experience (except on the Kindle, where they are essentially the same as a content TOC).
+Finally, I encourage you to ditch the content ToC and only have a metadata ToC in your ebooks. Metadata ToCs will give the people reading your ebooks a much superior navigation experience (except on the Kindle, where they are essentially the same as a content ToC).
+
+.. note::
+    The newer AZW3 format has proper support for a metadata ToC. However, the
+    Kindle firmware tends to malfunction if you disable the generation of the
+    end-of-file inline ToC. So it is recommended that you leave the generated
+    ToC alone. If you create an AZW3 file with a metadata ToC and no
+    end-of-file generated ToC, some features ont he Kindle will not work, such
+    as the Page Flip feature.
 
 The covers for my MOBI files have stopped showing up in Kindle for PC/Kindle for Android/iPad etc.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -122,11 +129,11 @@ The EPUB I produced with |app| is not valid?
 
 |app| does not guarantee that an EPUB produced by it is valid. The only
 guarantee it makes is that if you feed it valid XHTML 1.1 + CSS 2.1 it will
-output a valid EPUB. |app| is designed for ebook consumers, not producers. It
-tries hard to ensure that EPUBs it produces actually work as intended on a wide
-variety of devices, a goal that is incompatible with producing valid EPUBs, and
-one that is far more important to the vast majority of its users. If you need a
-tool that always produces valid EPUBs, |app| is not for you.
+output a valid EPUB. |app| tries hard to ensure that EPUBs it produces actually
+work as intended on a wide variety of devices, a goal that is incompatible with
+producing valid EPUBs, and one that is far more important to the vast majority
+of its users. If you need a tool that always produces valid EPUBs, |app| is not
+for you.
 
 How do I use some of the advanced features of the conversion tools?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -192,8 +199,8 @@ Follow these steps to find the problem:
       should show up in Windows Explorer (in Windows) or Finder (in OS X).
     * In |app|, go to Preferences->Ignored Devices and check that your device
       is not being ignored
-    * If all the above steps fail, go to Preferences->Miscellaneous and click
-      debug device detection with your device attached and post the output as a
+    * If all the above steps fail, go to :guilabel:`Preferences->Miscellaneous` and click
+      :guilabel:`Debug device detection` with your device attached and post the output as a
       ticket on `the calibre bug tracker <http://bugs.calibre-ebook.com>`_.
 
 My device is non-standard or unusual. What can I do to connect to it?
@@ -442,7 +449,10 @@ that does not come from a well known relay. The most robust way to setup email s
   * Create a free GMail account at `Google <http://www.gmail.com>`_. 
   * Goto Preferences->Email in |app| and click the "Use Gmail" button and fill in the information asked for.
   * |app| will then use GMail to send the mail.
-  * If you are sending to your Kindle, remember to update the email preferences on your Amazon Kindle page to allow email sent from your GMail email address.
+  * If you are sending to your Kindle, remember to update the email preferences
+    on your Amazon Kindle page to allow email sent from your GMail email
+    address. Also note that Amazon does not allow email delivery of AZW3 and
+    new style (KF8) MOBI files.
 
 Even after doing this, you may have problems. One common source of problems is that some poorly designed antivirus
 programs block |app| from opening a connection to send email. Try adding an exclusion for |app| in your
@@ -499,11 +509,17 @@ that allows you to create collections on your Kindle from the |app| metadata. It
 I am getting an error when I try to use |app| with my Kobo Touch/Glo/etc.?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The Kobo has very buggy firmware. Connecting to it has been known to fail at random. Certain combinations of motherboard, USB ports/cables/hubs can exacerbate this tendency to fail. If you are getting an error when connecting to your touch with |app| try the following, each of which has solved the problem for *some* |app| users.
+The Kobo has very buggy firmware. Connecting to it has been known to fail at
+random. Certain combinations of motherboard, USB ports/cables/hubs can
+exacerbate this tendency to fail. If you are getting an error when connecting
+to your touch with |app| try the following, each of which has solved the
+problem for *some* |app| users.
 
   * Connect the Kobo directly to your computer, not via USB Hub
   * Try a different USB cable and a different USB port on your computer
-  * Try a different computer (preferably an older model)
+  * Try a different computer, in particular the Kobo does not work well with
+    some Windows XP machines. If you are on Windows XP, try a computer with a
+    newer version of windows.
   * Try upgrading the firmware on your Kobo Touch to the latest
   * Try resetting the Kobo (sometimes this cures the problem for a little while, but then it re-appears, in which case you have to reset again and again)
   * Try only putting one or two books onto the Kobo at a time and do not keep large collections on the Kobo
@@ -622,13 +638,29 @@ should fix by hand.
 The list of books in |app| is blank!
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In order to understand why that happened, you have to understand what a |app| library is. At the most basic level, a |app| library is just a folder. Whenever you add a book to |app|, that book's files are copied into this folder (arranged into sub folders by author and title). Inside the |app| library folder, at the top level, you will see a file called metadata.db. This file is where |app| stores the metadata like title/author/rating/tags etc. for *every* book in your |app| library. The list of books that |app| displays is created by reading the contents of this metadata.db file.
+In order to understand why that happened, you have to understand what a |app|
+library is. At the most basic level, a |app| library is just a folder. Whenever
+you add a book to |app|, that book's files are copied into this folder
+(arranged into sub folders by author and title). Inside the |app| library
+folder, at the top level, you will see a file called metadata.db. This file is
+where |app| stores the metadata like title/author/rating/tags etc. for *every*
+book in your |app| library. The list of books that |app| displays is created by
+reading the contents of this metadata.db file.
 
 There can be two reasons why |app| is showing a empty list of books:
 
-  * Your |app| library folder changed its location. This can happen if it was on an external disk and the drive letter for that disk changed. Or if you accidentally moved the folder. In this case, |app| cannot find its library and so starts up with an empty library instead. To remedy this, do a right-click on the |app| icon in the |app| toolbar (it will say 0 books underneath it) and select Switch/create library. Click the little blue icon to select the new location of your |app| library and click OK.
+  * Your |app| library folder changed its location. This can happen if it was
+    on an external disk and the drive letter for that disk changed. Or if you
+    accidentally moved the folder. In this case, |app| cannot find its library
+    and so starts up with an empty library instead. To remedy this, do a
+    right-click on the |app| icon in the |app| toolbar and select Switch/create
+    library. Click the little blue icon to select the new location of your
+    |app| library and click OK.
 
-  * Your metadata.db file was deleted/corrupted. In this case, you can ask |app| to rebuild the metadata.db from its backups. Right click the |app| icon in the |app| toolbar (it will say 0 books underneath it) and select Library maintenance->Restore database. |app| will automatically rebuild metadata.db.
+  * Your metadata.db file was deleted/corrupted. In this case, you can ask
+    |app| to rebuild the metadata.db from its backups. Right click the |app|
+    icon in the |app| toolbar and select Library maintenance->Restore database.
+    |app| will automatically rebuild metadata.db.
 
 I am getting errors with my calibre library on a networked drive/NAS?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -648,7 +680,7 @@ computers. Run |app| on a single computer and access it via the Content Server
 or a Remote Desktop solution.
 
 If you must share the actual library, use a file syncing tool like
-DropBox or rsync or Microsoft SkyDrive instead of a networked drive. If you are
+DropBox or rsync instead of a networked drive. If you are
 using a file-syncing tool it is **essential** that you make sure that both
 |app| and the file syncing tool do not try to access the |app| library at the
 same time. In other words, **do not** run the file syncing tool and |app| at
@@ -660,16 +692,13 @@ if you are willing to live with that risk. In particular, be aware that
 Google Drive, **you will suffer data loss**. See `this thread
 <http://www.mobileread.com/forums/showthread.php?t=205581>`_ for details.
 
-Content From The Web
----------------------
+
+Miscellaneous
+--------------
+
 .. contents:: Contents
   :depth: 1
   :local:
-
-
-I obtained a recipe for a news site as a .py file from somewhere, how do I use it?
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Start the :guilabel:`Add custom news sources` dialog (from the :guilabel:`Fetch news` menu) and click the :guilabel:`Switch to advanced mode` button. Delete everything in the box with the recipe source code and copy paste the contents of your .py file into the box. Click :guilabel:`Add/update recipe`.
 
 
 I want |app| to download news from my favorite news website.
@@ -678,16 +707,6 @@ If you are reasonably proficient with computers, you can teach |app| to download
 
 Otherwise, you can request a particular news site by posting in the `calibre Recipes forum <http://www.mobileread.com/forums/forumdisplay.php?f=228>`_.
 
-Can I use web2disk to download an arbitrary website?
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-``web2disk http://mywebsite.com``
-
-Miscellaneous
---------------
-
-.. contents:: Contents
-  :depth: 1
-  :local:
 
 Why the name calibre?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -700,8 +719,14 @@ Take your pick:
 |app| is pronounced as cal-i-ber *not* ca-li-bre. If you're wondering, |app| is the British/commonwealth spelling for caliber. Being Indian, that's the natural spelling for me. 
 
 Why does |app| show only some of my fonts on OS X?
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-|app| embeds fonts in ebook files it creates. Ebook files support embedding only TrueType (.ttf) fonts. Most fonts on OS X systems are in .dfont format, thus they cannot be embedded. |app| shows only TrueType fonts found on your system. You can obtain many TrueType fonts on the web. Simply download the .ttf files and add them to the Library/Fonts directory in your home directory.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
+
+|app| embeds fonts in ebook files it creates. Ebook files support embedding
+only TrueType and OpenType (.ttf and .otf) fonts. Most fonts on OS X systems
+are in .dfont format, thus they cannot be embedded. |app| shows only TrueType
+and OpenType fonts found on your system. You can obtain many such fonts on the
+web. Simply download the .ttf/.otf files and add them to the Library/Fonts
+directory in your home directory.
 
 |app| is not starting on Windows?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -763,6 +788,15 @@ There are several possible things I know of, that can cause this:
       that prevent 64-bit |app| from working properly. If you are using the 64-bit
       version of |app| try switching to the 32-bit version.
 
+    * If the crashes happen specifically when you are using a file open dialog,
+      like clicking on the Add Books button or the Save to Disk button, then
+      you may have an issue with the windows file open dialogs on your
+      computer. You can tell calibre to use its own file open dialogs by
+      setting the environment variable ``CALIBRE_NO_NATIVE_FILEDIALOGS=1``.
+      See `How to set environment variables in windows <http://www.computerhope.com/issues/ch000549.htm>`_.
+      Some |app| users have reported that uninstalling the SpiderOak encrypted
+      backup software also fixes these crashes.
+
 If none of the above apply to you, then there is some other program on your
 computer that is interfering with |app|. First reboot your computer in safe
 mode, to have as few running programs as possible, and see if the crashes still
@@ -775,6 +809,31 @@ Screen Reader.
 The only way to find the culprit is to eliminate the programs one by one and
 see which one is causing the issue. Basically, stop a program, run calibre,
 check for crashes. If they still happen, stop another program and repeat.
+
+
+Using the viewer or doing any conversions results in a permission denied error on windows
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Something on your computer is preventing calibre from accessing its own
+temporary files. Most likely the permissions on your Temp folder are incorrect.
+Go to the folder file:`C:\\Users\\USERNAME\\AppData\\Local` in Windows
+Explorer and then right click on the file:`Temp` folder, select Properties and go to
+the Security tab. Make sure that your user account has full control for this
+folder.
+
+Some users have reported that running the following command in an Administrator
+Command Prompt fixed their permissions.  To get an Administrator Command Prompt
+search for cmd.exe in the start menu, then right click on the command prompt
+entry and select Run as Administrator. At the command prompt type the following
+command and press Enter::
+
+    icacls "%appdata%\..\Local\Temp" /reset /T
+
+Alternately, you can run calibre as Administrator, but doing so will cause
+some functionality, such as drag and drop to not work.
+
+Finally, some users have reported that disabling UAC fixes the problem.
+
 
 |app| is not starting on OS X?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -816,9 +875,10 @@ My antivirus program claims |app| is a virus/trojan?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The first thing to check is that you are downloading |app| from the official
-website: `<http://calibre-ebook.com/download>`_. |app| is a very popular program
-and unscrupulous people try to setup websites offering it for download to fool
-the unwary.
+website: `<http://calibre-ebook.com/download>`_. Make sure you are clicking the
+download links on the left, not the advertisements on the right. |app| is a
+very popular program and unscrupulous people try to setup websites offering it
+for download to fool the unwary.
 
 If you have the official download and your antivirus program is still claiming
 |app| is a virus, then, your antivirus program is wrong. Antivirus programs use
@@ -880,14 +940,29 @@ Why doesn't |app| have an automatic update?
 
 For many reasons:
 
-  * *There is no need to update every week*. If you are happy with how |app| works turn off the update notification and be on your merry way. Check back to see if you want to update once a year or so.
-  * Pre downloading the updates for all users in the background would require about 80TB of bandwidth *every week*. That costs thousands of dollars a month. And |app| is currently growing at 300,000 new users every month.
-  * If I implement a dialog that downloads the update and launches it, instead of going to the website as it does now, that would save the most ardent |app| updater, *at most five clicks a week*. There are far higher priority things to do in |app| development.
-  * If you really, really hate downloading |app| every week but still want to be up to the latest, I encourage you to run from source, which makes updating trivial. Instructions are :ref:`available here <develop>`.
+  * *There is no need to update every week*. If you are happy with how |app|
+    works turn off the update notification and be on your merry way. Check back
+    to see if you want to update once a year or so. There is a check box to
+    turn off the update notification, on the update notification itself.
+
+  * |app| downloads currently use `about 100TB of bandwidth a month
+    <http://status.calibre-ebook.com/downloads>`_. Implementing automatic
+    updates would greatly increase that and end up costing thousands of dollars
+    a month, which someone has to pay. And |app| is currently growing at `half
+    a million new installs a month <https://status.calibre-ebook.com>`_.
+
+  * If I implement a dialog that downloads the update and launches it, instead
+    of going to the website as it does now, that would save the most ardent
+    |app| updater, *at most five clicks a week*. There are far higher priority
+    things to do in |app| development.
+
+  * If you really, really hate downloading |app| every week but still want to
+    be up to the latest, I encourage you to run from source, which makes
+    updating trivial. Instructions are :ref:`available here <develop>`.
 
 How is |app| licensed?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-|app| is licensed under the GNU General Public License v3 (an open source license). This means that you are free to redistribute |app| as long as you make the source code available. So if you want to put |app| on a CD with your product, you must also put the |app| source code on the CD. The source code is available for download `from googlecode <http://code.google.com/p/calibre-ebook/downloads/list>`_. You are free to use the results of conversions from |app| however you want. You cannot use code, libraries from |app| in your software without making your software open source. For details, see `The GNU GPL v3 <http://www.gnu.org/licenses/gpl.html>`_.
+|app| is licensed under the GNU General Public License v3 (an open source license). This means that you are free to redistribute |app| as long as you make the source code available. So if you want to put |app| on a CD with your product, you must also put the |app| source code on the CD. The source code is available `for download <http://download.calibre-ebook.com>`_. You are free to use the results of conversions from |app| however you want. You cannot use either code or libraries from |app| in your software without making your software open source. For details, see `The GNU GPL v3 <http://www.gnu.org/licenses/gpl.html>`_.
 
 How do I run calibre from my USB stick?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

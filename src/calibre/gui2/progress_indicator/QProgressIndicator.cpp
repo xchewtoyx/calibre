@@ -6,6 +6,7 @@
 #include <QStyle>
 #include <QApplication>
 #include <QDebug>
+#include <QProxyStyle>
 
 QProgressIndicator::QProgressIndicator(QWidget* parent, int size)
         : QWidget(parent),
@@ -159,3 +160,33 @@ bool do_notify(QObject *receiver, QEvent *event) {
     return false;
 }
 
+class NoActivateStyle: public QProxyStyle { 
+ 	public: 
+        int styleHint(StyleHint hint, const QStyleOption *option = 0, const QWidget *widget = 0, QStyleHintReturn *returnData = 0) const { 
+            if (hint == QStyle::SH_ItemView_ActivateItemOnSingleClick) return 0; 
+            return QProxyStyle::styleHint(hint, option, widget, returnData); 
+        } 
+};
+
+void set_no_activate_on_click(QWidget *widget) {
+    widget->setStyle(new NoActivateStyle);
+}
+
+class TouchMenuStyle: public QProxyStyle {
+    private:
+        int extra_margin;
+
+    public:
+        TouchMenuStyle(int margin) : extra_margin(margin) {}
+        QSize sizeFromContents ( ContentsType type, const QStyleOption * option, const QSize & contentsSize, const QWidget * widget = 0 ) const {
+            QSize ans = QProxyStyle::sizeFromContents(type, option, contentsSize, widget);
+            if (type == QStyle::CT_MenuItem) {
+                ans.setHeight(ans.height() + extra_margin);  // Make the menu items more easily touchable
+            }
+            return ans;
+        }
+};
+
+void set_touch_menu_style(QWidget *widget, int margin) {
+    widget->setStyle(new TouchMenuStyle(margin));
+}

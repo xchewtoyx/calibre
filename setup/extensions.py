@@ -30,7 +30,6 @@ class Extension(object):
         return list(set([x if os.path.isabs(x) else os.path.join(SRC, x.replace('/',
             os.sep)) for x in paths]))
 
-
     def __init__(self, name, sources, **kwargs):
         self.name = name
         self.needs_cxx = bool([1 for x in sources if os.path.splitext(x)[1] in
@@ -67,16 +66,40 @@ if iswindows:
     icu_libs = ['icudt', 'icuin', 'icuuc', 'icuio']
 if isosx:
     icu_libs = ['icucore']
-    icu_cflags = ['-DU_DISABLE_RENAMING'] # Needed to use system libicucore.dylib
+    icu_cflags = ['-DU_DISABLE_RENAMING']  # Needed to use system libicucore.dylib
 
 extensions = [
+
+    Extension('hunspell',
+              ['hunspell/'+x for x in
+                'affentry.cxx affixmgr.cxx csutil.cxx dictmgr.cxx filemgr.cxx hashmgr.cxx hunspell.cxx phonet.cxx replist.cxx suggestmgr.cxx'.split()
+                ] + ['calibre/utils/spell/hunspell_wrapper.cpp',],
+              inc_dirs=['hunspell'],
+              cflags='/DHUNSPELL_STATIC /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE'.split() if iswindows else ['-DHUNSPELL_STATIC'],
+              optimize_level=2,
+              ),
+
+    Extension('_regex',
+              ['regex/_regex.c', 'regex/_regex_unicode.c'],
+              headers=['regex/_regex.h'],
+              optimize_level=2,
+              ),
 
     Extension('speedup',
         ['calibre/utils/speedup.c'],
         ),
 
+    Extension('tokenizer',
+        ['tinycss/tokenizer.c'],
+        ),
+
+    Extension('_patiencediff_c',
+        ['calibre/gui2/tweak_book/diff/_patiencediff_c.c'],
+        ),
+
     Extension('icu',
         ['calibre/utils/icu.c'],
+        headers=['calibre/utils/icu_calibre_utils.h'],
         libraries=icu_libs,
         lib_dirs=icu_lib_dirs,
         inc_dirs=icu_inc_dirs,
@@ -107,7 +130,8 @@ extensions = [
         headers=['calibre/utils/magick/magick_constants.h'],
         libraries=magick_libs,
         lib_dirs=magick_lib_dirs,
-        inc_dirs=magick_inc_dirs
+        inc_dirs=magick_inc_dirs,
+        cflags=['-DMAGICKCORE_QUANTUM_DEPTH=16', '-DMAGICKCORE_HDRI_ENABLE=0']
         ),
 
     Extension('lzx',
@@ -127,7 +151,7 @@ extensions = [
 
     Extension('freetype',
         ['calibre/utils/fonts/freetype.cpp'],
-        inc_dirs = ft_inc_dirs,
+        inc_dirs=ft_inc_dirs,
         libraries=ft_libs,
         lib_dirs=ft_lib_dirs),
 
@@ -153,6 +177,20 @@ extensions = [
     Extension('cPalmdoc',
         ['calibre/ebooks/compression/palmdoc.c']),
 
+    Extension('bzzdec',
+        ['calibre/ebooks/djvu/bzzdecoder.c'],
+        inc_dirs=(['calibre/utils/chm'] if iswindows else [])  # For stdint.h
+    ),
+
+    Extension('matcher',
+        ['calibre/utils/matcher.c'],
+        headers=['calibre/utils/icu_calibre_utils.h'],
+        libraries=icu_libs,
+        lib_dirs=icu_lib_dirs,
+        cflags=icu_cflags,
+        inc_dirs=icu_inc_dirs
+    ),
+
     Extension('podofo',
                     [
                         'calibre/utils/podofo/utils.cpp',
@@ -171,23 +209,23 @@ extensions = [
 
     Extension('pictureflow',
                 ['calibre/gui2/pictureflow/pictureflow.cpp'],
-                inc_dirs = ['calibre/gui2/pictureflow'],
-                headers = ['calibre/gui2/pictureflow/pictureflow.h'],
-                sip_files = ['calibre/gui2/pictureflow/pictureflow.sip']
+                inc_dirs=['calibre/gui2/pictureflow'],
+                headers=['calibre/gui2/pictureflow/pictureflow.h'],
+                sip_files=['calibre/gui2/pictureflow/pictureflow.sip']
                 ),
 
     Extension('progress_indicator',
                 ['calibre/gui2/progress_indicator/QProgressIndicator.cpp'],
-                inc_dirs = ['calibre/gui2/progress_indicator'],
-                headers = ['calibre/gui2/progress_indicator/QProgressIndicator.h'],
-                sip_files = ['calibre/gui2/progress_indicator/QProgressIndicator.sip']
+                inc_dirs=['calibre/gui2/progress_indicator'],
+                headers=['calibre/gui2/progress_indicator/QProgressIndicator.h'],
+                sip_files=['calibre/gui2/progress_indicator/QProgressIndicator.sip']
                 ),
 
     Extension('qt_hack',
                 ['calibre/ebooks/pdf/render/qt_hack.cpp'],
-                inc_dirs = qt_private_inc + ['calibre/ebooks/pdf/render', 'qt-harfbuzz/src'],
-                headers = ['calibre/ebooks/pdf/render/qt_hack.h'],
-                sip_files = ['calibre/ebooks/pdf/render/qt_hack.sip']
+                inc_dirs=qt_private_inc + ['calibre/ebooks/pdf/render', 'qt-harfbuzz/src'],
+                headers=['calibre/ebooks/pdf/render/qt_hack.h'],
+                sip_files=['calibre/ebooks/pdf/render/qt_hack.sip']
                 ),
 
     Extension('unrar',
@@ -200,7 +238,7 @@ extensions = [
                volume.o list.o find.o unpack.o cmddata.o filestr.o scantree.o
                '''.split()] + ['calibre/utils/unrar.cpp'],
               inc_dirs=['unrar'],
-              cflags = [('/' if iswindows else '-') + x for x in (
+              cflags=[('/' if iswindows else '-') + x for x in (
                   'DSILENT', 'DRARDLL', 'DUNRAR')] + (
                   [] if iswindows else ['-D_FILE_OFFSET_BITS=64',
                                         '-D_LARGEFILE_SOURCE']),
@@ -269,9 +307,10 @@ if islinux or isosx:
 if isunix:
     cc = os.environ.get('CC', 'gcc')
     cxx = os.environ.get('CXX', 'g++')
+    debug = ''
+    # debug = '-ggdb'
     cflags = os.environ.get('OVERRIDE_CFLAGS',
-        # '-Wall -DNDEBUG -ggdb -fno-strict-aliasing -pipe')
-        '-Wall -DNDEBUG -fno-strict-aliasing -pipe')
+        '-Wall -DNDEBUG %s -fno-strict-aliasing -pipe' % debug)
     cflags = shlex.split(cflags) + ['-fPIC']
     ldflags = os.environ.get('OVERRIDE_LDFLAGS', '-Wall')
     ldflags = shlex.split(ldflags)
@@ -308,8 +347,8 @@ if iswindows:
     cc = cxx = msvc.cc
     cflags = '/c /nologo /MD /W3 /EHsc /DNDEBUG'.split()
     ldflags = '/DLL /nologo /INCREMENTAL:NO /NODEFAULTLIB:libcmt.lib'.split()
-    #cflags = '/c /nologo /Ox /MD /W3 /EHsc /Zi'.split()
-    #ldflags = '/DLL /nologo /INCREMENTAL:NO /DEBUG'.split()
+    # cflags = '/c /nologo /Ox /MD /W3 /EHsc /Zi'.split()
+    # ldflags = '/DLL /nologo /INCREMENTAL:NO /DEBUG'.split()
     if is64bit:
         cflags.append('/GS-')
 
@@ -413,7 +452,7 @@ class Build(Command):
             obj = self.j(obj_dir, os.path.splitext(self.b(src))[0]+'.o')
             objects.append(obj)
             if self.newer(obj, [src]+ext.headers):
-                inf = '/Tp' if src.endswith('.cpp') else '/Tc'
+                inf = '/Tp' if src.endswith('.cpp') or src.endswith('.cxx') else '/Tc'
                 sinc = [inf+src] if iswindows else ['-c', src]
                 oinc = ['/Fo'+obj] if iswindows else ['-o', obj]
                 cmd = [compiler] + cflags + ext.cflags + einc + sinc + oinc
@@ -434,11 +473,11 @@ class Build(Command):
             self.info('\n\n', ' '.join(cmd), '\n\n')
             self.check_call(cmd)
             if iswindows:
-                #manifest = dest+'.manifest'
-                #cmd = [MT, '-manifest', manifest, '-outputresource:%s;2'%dest]
-                #self.info(*cmd)
-                #self.check_call(cmd)
-                #os.remove(manifest)
+                # manifest = dest+'.manifest'
+                # cmd = [MT, '-manifest', manifest, '-outputresource:%s;2'%dest]
+                # self.info(*cmd)
+                # self.check_call(cmd)
+                # os.remove(manifest)
                 for x in ('.exp', '.lib'):
                     x = os.path.splitext(dest)[0]+x
                     if os.path.exists(x):
@@ -487,7 +526,7 @@ class Build(Command):
            "style/windowmanager.cpp",
         ]
         if not iswindows and not isosx:
-            headers.append( "style/shadowhelper.h")
+            headers.append("style/shadowhelper.h")
             sources.append('style/shadowhelper.cpp')
 
         pro = textwrap.dedent('''
@@ -563,7 +602,7 @@ class Build(Command):
             if iswindows:
                 qmc += ['-spec', 'win32-msvc2008']
             self.check_call(qmc + [ext.name+'.pro'])
-            self.check_call([make, '-f', 'Makefile'])
+            self.check_call([make, '-f', 'Makefile']+([] if iswindows else ['-j%d'%(cpu_count() or 1)]))
             objects = glob.glob(obj_pat)
         return list(map(self.a, objects))
 
@@ -586,7 +625,7 @@ class Build(Command):
         sbf = self.j(src_dir, self.b(sipf)+'.sbf')
         if self.newer(sbf, [sipf]+ext.headers):
             exe = '.exe' if iswindows else ''
-            cmd = [pyqt.sip_bin+exe, '-w', '-c', src_dir, '-b', sbf, '-I'+\
+            cmd = [pyqt.sip_bin+exe, '-w', '-c', src_dir, '-b', sbf, '-I'+
                     pyqt.pyqt_sip_dir] + shlex.split(pyqt.pyqt_sip_flags) + [sipf]
             self.info(' '.join(cmd))
             self.check_call(cmd)

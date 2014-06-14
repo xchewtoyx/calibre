@@ -147,7 +147,7 @@ sort_columns_at_startup = None
 #  d     the day as number without a leading zero (1 to 31)
 #  dd    the day as number with a leading zero (01 to 31)
 #  ddd   the abbreviated localized day name (e.g. 'Mon' to 'Sun').
-#  dddd  the long localized day name (e.g. 'Monday' to 'Qt::Sunday').
+#  dddd  the long localized day name (e.g. 'Monday' to 'Sunday').
 #  M     the month as number without a leading zero (1-12)
 #  MM    the month as number with a leading zero (01-12)
 #  MMM   the abbreviated localized month name (e.g. 'Jan' to 'Dec').
@@ -223,8 +223,8 @@ per_language_title_sort_articles = {
         'spa'  : (r'El\s+', r'La\s+', r'Lo\s+', r'Los\s+', r'Las\s+', r'Un\s+',
                   r'Una\s+', r'Unos\s+', r'Unas\s+'),
         # French
-        'fra'  : (r'Le\s+', r'La\s+', r"L'", r'Les\s+', r'Un\s+', r'Une\s+',
-                  r'Des\s+', r'De\s+La\s+', r'De\s+', r"D'"),
+        'fra'  : (r'Le\s+', r'La\s+', r"L'", u'L´', r'Les\s+', r'Un\s+', r'Une\s+',
+                  r'Des\s+', r'De\s+La\s+', r'De\s+', r"D'", u'D´'),
         # Italian
         'ita'  : (r'Lo\s+', r'Il\s+', r"L'", r'La\s+', r'Gli\s+', r'I\s+',
                   r'Le\s+', ),
@@ -385,6 +385,12 @@ sort_dates_using_visible_fields = False
 generate_cover_title_font = None
 generate_cover_foot_font = None
 
+#: Fuzz value for trimming covers
+# The value used for the fuzz distance when trimming a cover.
+# Colors within this distance are considered equal.
+# The distance is in absolute intensity units.
+cover_trim_fuzz_value = 10
+
 #: Control behavior of the book list
 # You can control the behavior of doubleclicks on the books list.
 # Choices: open_viewer, do_nothing,
@@ -438,7 +444,7 @@ public_smtp_relay_delay = 301
 # All covers in the calibre library will be resized, preserving aspect ratio,
 # to fit within this size. This is to prevent slowdowns caused by extremely
 # large covers
-maximum_cover_size = (1200, 1600)
+maximum_cover_size = (1650, 2200)
 
 #: Where to send downloaded news
 # When automatically sending downloaded news to a connected device, calibre
@@ -517,6 +523,14 @@ default_tweak_format = None
 # your library and your personal editing style.
 preselect_first_completion = False
 
+#: Completion mode when editing authors/tags/series/etc.
+# By default, when completing items, calibre will show you all the candidates
+# that start with the text you have already typed. You can instead have it show
+# all candidates that contain the text you have already typed. To do this, set
+# completion_mode to 'contains'. For example, if you type asi it will match both
+# Asimov and Quasimodo, whereas the default behavior would match only Asimov.
+completion_mode = 'prefix'
+
 #: Recognize numbers inside text when sorting
 # This means that when sorting on text fields like title the text "Book 2"
 # will sort before the text "Book 100". If you want this behavior, set
@@ -537,3 +551,17 @@ many_libraries = 10
 # highlight with this tweak. Set it to 'transparent' to disable highlighting.
 highlight_virtual_library = 'yellow'
 
+#: Choose available output formats for conversion
+# Restrict the list of available output formats in the conversion dialogs.
+# For example, if you only want to convert to EPUB and AZW3, change this to
+# restrict_output_formats = ['EPUB', 'AZW3']. The default value of None causes
+# all available output formats to be present.
+restrict_output_formats = None
+
+#: Set the thumbnail image quality used by the content server
+# The quality of a thumbnail is largely controlled by the compression quality
+# used when creating it. Set this to a larger number to improve the quality.
+# Note that the thumbnails get much larger with larger compression quality
+# numbers.
+# The value can be between 50 and 99
+content_server_thumbnail_compression_quality = 75

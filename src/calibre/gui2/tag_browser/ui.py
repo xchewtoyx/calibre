@@ -111,7 +111,7 @@ class TagBrowserMixin(object):  # {{{
             db.field_metadata.remove_user_categories()
             for k in d.categories:
                 db.field_metadata.add_user_category('@' + k, k)
-            db.data.change_search_locations(db.field_metadata.get_search_terms())
+            db.new_api.refresh_search_locations()
             self.tags_view.recount()
 
     def do_delete_user_category(self, category_name):
@@ -252,8 +252,7 @@ class TagBrowserMixin(object):  # {{{
         if not question_dialog(self.tags_view,
                     title=_('Delete item'),
                     msg='<p>'+
-                    _('%s will be deleted from all books. Are you sure?')
-                                %orig_name,
+                    _('%s will be deleted from all books. Are you sure?') %orig_name,
                     skip_dialog_name='tag_item_delete',
                     skip_dialog_msg=_('Show this confirmation again')):
             return
@@ -334,7 +333,7 @@ class TagBrowserWidget(QWidget):  # {{{
         search_layout = QHBoxLayout()
         self._layout.addLayout(search_layout)
         self.item_search = HistoryLineEdit(parent)
-        self.item_search.setMinimumContentsLength(10)
+        self.item_search.setMinimumContentsLength(5)
         self.item_search.setSizeAdjustPolicy(self.item_search.AdjustToMinimumContentsLengthWithIcon)
         try:
             self.item_search.lineEdit().setPlaceholderText(
@@ -408,7 +407,7 @@ class TagBrowserWidget(QWidget):  # {{{
         sb.bg = QActionGroup(sb)
 
         # Must be in the same order as db2.CATEGORY_SORTS
-        for i, x in enumerate((_('Sort by name'), _('Sort by popularity'),
+        for i, x in enumerate((_('Sort by name'), _('Sort by number of books'),
                   _('Sort by average rating'))):
             a = sb.m.addAction(x)
             sb.bg.addAction(a)
@@ -436,7 +435,7 @@ class TagBrowserWidget(QWidget):  # {{{
                     'match any or all of them'))
         ma.setStatusTip(ma.toolTip())
 
-        mt = l.m.addAction(_('Manage authors, tags, etc'))
+        mt = l.m.addAction(_('Manage authors, tags, etc.'))
         mt.setToolTip(_('All of these category_managers are available by right-clicking '
                        'on items in the tag browser above'))
         mt.m = l.manage_menu = QMenu(l.m)

@@ -40,7 +40,6 @@ class ANSIStream(Stream):
                       }
 
     def prints(self, level, *args, **kwargs):
-        kwargs['file'] = self.stream
         from calibre.utils.terminal import ColoredStream
         with ColoredStream(self.stream, self.color[level]):
             self._prints(*args, **kwargs)
@@ -147,7 +146,6 @@ class Log(object):
         self.info  = partial(self.prints, INFO)
         self.warn  = self.warning = partial(self.prints, WARN)
         self.error = partial(self.prints, ERROR)
-
 
     def prints(self, level, *args, **kwargs):
         if level < self.filter_level:

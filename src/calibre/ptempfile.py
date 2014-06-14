@@ -29,10 +29,44 @@ def remove_dir(x):
     except:
         pass
 
+def determined_remove_dir(x):
+    for i in range(10):
+        try:
+            import shutil
+            shutil.rmtree(x)
+            return
+        except:
+            import os  # noqa
+            if os.path.exists(x):
+                # In case some other program has one of the temp files open.
+                import time
+                time.sleep(0.1)
+            else:
+                return
+    try:
+        import shutil
+        shutil.rmtree(x, ignore_errors=True)
+    except:
+        pass
+
+
 def app_prefix(prefix):
     if iswindows:
         return '%s_'%__appname__
     return '%s_%s_%s'%(__appname__, __version__, prefix)
+
+def reset_temp_folder_permissions():
+    # There are some broken windows installs where the permissions for the temp
+    # folder are set to not be executable, which means chdir() into temp
+    # folders fails. Try to fix that by resetting the permissions on the temp
+    # folder.
+    global _base_dir
+    if iswindows and _base_dir:
+        import subprocess
+        from calibre import prints
+        parent = os.path.dirname(_base_dir)
+        retcode = subprocess.Popen(['icacls.exe', parent, '/reset', '/Q', '/T']).wait()
+        prints('Trying to reset permissions of temp folder', parent, 'return code:', retcode)
 
 def base_dir():
     global _base_dir
@@ -65,7 +99,7 @@ def base_dir():
                 base = get_windows_temp_path()
 
             _base_dir = tempfile.mkdtemp(prefix=prefix, dir=base)
-            atexit.register(remove_dir, _base_dir)
+            atexit.register(determined_remove_dir if iswindows else remove_dir, _base_dir)
 
         try:
             tempfile.gettempdir()
@@ -97,6 +131,7 @@ def _make_dir(suffix, prefix, base):
     return tempfile.mkdtemp(suffix, prefix, base)
 
 class PersistentTemporaryFile(object):
+
     """
     A file-like object that is a temporary file that is available even after being closed on
     all platforms. It is automatically deleted on normal program termination.
@@ -104,7 +139,7 @@ class PersistentTemporaryFile(object):
     _file = None
 
     def __init__(self, suffix="", prefix="", dir=None, mode='w+b'):
-        if prefix == None:
+        if prefix is None:
             prefix = ""
         if dir is None:
             dir = base_dir()
@@ -145,6 +180,7 @@ def PersistentTemporaryDirectory(suffix='', prefix='', dir=None):
     return tdir
 
 class TemporaryDirectory(object):
+
     '''
     A temporary directory to be used in a with statement.
     '''
@@ -157,7 +193,8 @@ class TemporaryDirectory(object):
         self.keep = keep
 
     def __enter__(self):
-        self.tdir = _make_dir(self.suffix, self.prefix, self.dir)
+        if not hasattr(self, 'tdir'):
+            self.tdir = _make_dir(self.suffix, self.prefix, self.dir)
         return self.tdir
 
     def __exit__(self, *args):
@@ -167,7 +204,7 @@ class TemporaryDirectory(object):
 class TemporaryFile(object):
 
     def __init__(self, suffix="", prefix="", dir=None, mode='w+b'):
-        if prefix == None:
+        if prefix is None:
             prefix = ''
         if suffix is None:
             suffix = ''
@@ -187,12 +224,11 @@ class TemporaryFile(object):
         cleanup(self._name)
 
 
-
 class SpooledTemporaryFile(tempfile.SpooledTemporaryFile):
 
     def __init__(self, max_size=0, suffix="", prefix="", dir=None, mode='w+b',
             bufsize=-1):
-        if prefix == None:
+        if prefix is None:
             prefix = ''
         if suffix is None:
             suffix = ''

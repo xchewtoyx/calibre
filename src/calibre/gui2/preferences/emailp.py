@@ -14,10 +14,10 @@ from calibre.gui2.preferences import ConfigWidgetBase, test_widget, \
         AbortCommit
 from calibre.gui2.preferences.email_ui import Ui_Form
 from calibre.utils.config import ConfigProxy
-from calibre.gui2 import NONE
+from calibre.gui2 import NONE, gprefs
 from calibre.utils.smtp import config as smtp_prefs
 
-class EmailAccounts(QAbstractTableModel): # {{{
+class EmailAccounts(QAbstractTableModel):  # {{{
 
     def __init__(self, accounts, subjects, aliases={}):
         QAbstractTableModel.__init__(self)
@@ -163,6 +163,8 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
     def genesis(self, gui):
         self.gui = gui
         self.proxy = ConfigProxy(smtp_prefs())
+        r = self.register
+        r('add_comments_to_email', gprefs)
 
         self.send_email_widget.initialize(self.preferred_to_address)
         self.send_email_widget.changed_signal.connect(self.changed_signal.emit)
@@ -191,6 +193,10 @@ class ConfigWidget(ConfigWidgetBase, Ui_Form):
         # No defaults to restore to
 
     def commit(self):
+        if self.email_view.state() == self.email_view.EditingState:
+            # Ensure that the cell being edited is committed by switching focus
+            # to some other widget, which automatically closes the open editor
+            self.send_email_widget.setFocus(Qt.OtherFocusReason)
         to_set = bool(self._email_accounts.accounts)
         if not self.send_email_widget.set_email_settings(to_set):
             raise AbortCommit('abort')

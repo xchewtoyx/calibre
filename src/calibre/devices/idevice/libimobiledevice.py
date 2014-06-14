@@ -182,10 +182,11 @@ class libiMobileDevice():
     # iDevice udid string
     UDID_SIZE = 40
 
-    def __init__(self, log=debug_print, verbose=False):
-        self.log = log
-        self.verbose = verbose
-
+    def __init__(self, **kwargs):
+        self.verbose = kwargs.get('verbose', False)
+        if not self.verbose:
+            self._log = self.__null
+            self._log_location = self.__null
         self._log_location()
         self.afc = None
         self.app_version = 0
@@ -218,7 +219,7 @@ class libiMobileDevice():
             self.device_connected = True
 
         except libiMobileDeviceException as e:
-            self.log(e.value)
+            self._log_error(e.value)
             self.disconnect_idevice()
 
         return self.device_connected
@@ -231,21 +232,39 @@ class libiMobileDevice():
         src: file on local filesystem
         dst: file to be created on iOS filesystem
         '''
-        self._log_location("src=%s, dst=%s" % (repr(src), repr(dst)))
-        mode = 'rb'
-        with open(src, mode) as f:
-            content = bytearray(f.read())
+        self._log_location("src:{0} dst:{1}".format(repr(src), repr(dst)))
+        BUFFER_SIZE = 10 * 1024 * 1024
 
-        mode = 'wb'
-        handle = self._afc_file_open(str(dst), mode=mode)
+        handle = self._afc_file_open(str(dst), mode='wb')
         if handle is not None:
-            success = self._afc_file_write(handle, content, mode=mode)
-            if self.verbose:
-                self.log(" success: %s" % success)
+            # Get the file size
+            file_stats = os.stat(src)
+            file_size = file_stats.st_size
+            self._log("file_size: {:,} bytes".format(file_size))
+            if file_size > BUFFER_SIZE:
+                bytes_remaining = file_size
+                with open(src, 'rb') as f:
+                    while bytes_remaining:
+                        if bytes_remaining > BUFFER_SIZE:
+                            self._log("copying {:,} byte chunk".format(BUFFER_SIZE))
+                            content = bytearray(f.read(BUFFER_SIZE))
+                            success = self._afc_file_write(handle, content, mode='wb')
+                            bytes_remaining -= BUFFER_SIZE
+                        else:
+                            self._log("copying final {:,} bytes".format(bytes_remaining))
+                            content = bytearray(f.read(bytes_remaining))
+                            success = self._afc_file_write(handle, content, mode='wb')
+                            bytes_remaining = 0
+                            self._log(" success: {0}".format(success))
+            else:
+                with open(src, 'rb') as f:
+                    content = bytearray(f.read())
+                success = self._afc_file_write(handle, content, mode='wb')
+                self._log(" success: {0}".format(success))
+
             self._afc_file_close(handle)
         else:
-            if self.verbose:
-                self.log(" could not create copy")
+            self._log(" could not create copy")
 
     def copy_from_idevice(self, src, dst):
         '''
@@ -254,14 +273,46 @@ class libiMobileDevice():
         src: path to file on iDevice
         dst: file object on local filesystem
         '''
-        self._log_location("src='%s', dst='%s'" % (src, dst.name))
-        data = self.read(src, mode='rb')
-        dst.write(data)
-        dst.close()
+        self._log_location()
+        self._log("src: {0}".format(repr(src)))
+        self._log("dst: {0}".format(dst.name))
 
-        # Update timestamps to match
-        file_stats = self._afc_get_file_info(src)
-        os.utime(dst.name, (file_stats['st_mtime'], file_stats['st_mtime']))
+        BUFFER_SIZE = 10 * 1024 * 1024
+        data = None
+        mode = 'rb'
+        handle = self._afc_file_open(src, mode)
+        if handle is not None:
+            file_stats = self._afc_get_file_info(src)
+            file_size = int(file_stats['st_size'])
+            self._log("file_size: {:,} bytes".format(file_size))
+            if file_size > BUFFER_SIZE:
+                bytes_remaining = file_size
+                while bytes_remaining:
+                    if bytes_remaining > BUFFER_SIZE:
+                        self._log("copying {:,} byte chunk".format(BUFFER_SIZE))
+                        data = self._afc_file_read(handle, BUFFER_SIZE, mode)
+                        dst.write(data)
+                        bytes_remaining -= BUFFER_SIZE
+                    else:
+                        self._log("copying final {:,} bytes".format(bytes_remaining))
+                        data = self._afc_file_read(handle, bytes_remaining, mode)
+                        dst.write(data)
+                        bytes_remaining = 0
+            else:
+                self._log("copying {:,} bytes".format(file_size))
+                data = self._afc_file_read(handle, file_size, mode)
+                dst.write(data)
+
+            self._afc_file_close(handle)
+            dst.close()
+
+            # Update timestamps to match
+            file_stats = self._afc_get_file_info(src)
+            os.utime(dst.name, (file_stats['st_mtime'], file_stats['st_mtime']))
+
+        else:
+            self._log(" could not open file")
+            raise libiMobileDeviceIOException("could not open file {0} for reading".format(repr(src)))
 
     def disconnect_idevice(self):
         '''
@@ -275,23 +326,23 @@ class libiMobileDevice():
             self._idevice_free()
             self.device_mounted = False
         else:
-            if self.verbose:
-                self.log(" device already disconnected")
+            self._log(" device already disconnected")
 
     def dismount_ios_media_folder(self):
-        self._afc_client_free()
-        #self._lockdown_goodbye()
-        self._idevice_free()
-        self.device_mounted = False
+        if self.device_mounted:
+            self._afc_client_free()
+            #self._lockdown_goodbye()
+            self._idevice_free()
+            self.device_mounted = False
 
-    def exists(self, path):
+    def exists(self, path, silent=False):
         '''
         Determine if path exists
 
         Returns file_info or {}
         '''
-        self._log_location("'%s'" % path)
-        return self._afc_get_file_info(path)
+        self._log_location("{0}".format(repr(path)))
+        return self._afc_get_file_info(path, silent=silent)
 
     def get_device_info(self):
         '''
@@ -377,13 +428,13 @@ class libiMobileDevice():
         self._log_location()
         return self._lockdown_get_value(requested_items)
 
-    def listdir(self, path):
+    def listdir(self, path, get_stats=True):
         '''
         Return a list containing the names of the entries in the iOS directory
         given by path.
         '''
-        self._log_location("'%s'" % path)
-        return self._afc_read_directory(path)
+        self._log_location("{0}".format(repr(path)))
+        return self._afc_read_directory(path, get_stats=get_stats)
 
     def load_library(self):
         if islinux:
@@ -412,11 +463,19 @@ class libiMobileDevice():
             self.plist_lib = cdll.LoadLibrary('libplist.dll')
 
         self._log_location(env)
-        self.log(" libimobiledevice loaded from '%s'" % self.lib._name)
-        self.log(" libplist loaded from '%s'" % self.plist_lib._name)
+        self._log(" libimobiledevice loaded from '{0}'".format(self.lib._name))
+        self._log(" libplist loaded from '{0}'".format(self.plist_lib._name))
 
         if False:
             self._idevice_set_debug_level(DEBUG)
+
+    def mkdir(self, path):
+        '''
+        Mimic mkdir(), creating a directory at path. Does not create
+        intermediate folders
+        '''
+        self._log_location("{0}".format(repr(path)))
+        return self._afc_make_directory(path)
 
     def mount_ios_app(self, app_name=None, app_id=None):
         '''
@@ -447,7 +506,7 @@ class libiMobileDevice():
                 self._instproxy_client_free()
 
                 if not app_name in self.installed_apps:
-                    self.log(" '%s' not installed on this iDevice" % app_name)
+                    self._log(" {0} not installed on this iDevice".format(repr(app_name)))
                     self.disconnect_idevice()
                 else:
                     # Mount the app's Container
@@ -462,7 +521,7 @@ class libiMobileDevice():
                     self.device_mounted = True
 
             except libiMobileDeviceException as e:
-                self.log(e.value)
+                self._log_error(e.value)
                 self.disconnect_idevice()
 
         elif app_id:
@@ -479,13 +538,13 @@ class libiMobileDevice():
                 self.device_mounted = True
 
             except libiMobileDeviceException as e:
-                self.log(e.value)
+                self._log_error("{0}: {1}".format(app_id, e.value))
                 self.disconnect_idevice()
 
         if self.device_mounted:
-            self._log_location("'%s' mounted" % (app_name if app_name else app_id))
+            self._log_location("'{0}' mounted".format(app_name if app_name else app_id))
         else:
-            self._log_location("unable to mount '%s'" % (app_name if app_name else app_id))
+            self._log_location("unable to mount '{0}'".format(app_name if app_name else app_id))
         return self.device_mounted
 
     def mount_ios_media_folder(self):
@@ -516,14 +575,16 @@ class libiMobileDevice():
             self.device_mounted = True
 
         except libiMobileDeviceException as e:
-            self.log(e.value)
+            self._log(e.value)
             self.dismount_ios_media_folder()
 
     def read(self, path, mode='r'):
         '''
-        Convenience method to read from path on iDevice
+        Convenience method to read from path on iDevice to memory buffer.
+        Use for small files.
+        For larger files copied to local file, use copy_from_idevice()
         '''
-        self._log_location("'%s', mode='%s'" % (path, mode))
+        self._log_location("{0} mode='{1}'".format(repr(path), mode))
 
         data = None
         handle = self._afc_file_open(path, mode)
@@ -532,9 +593,8 @@ class libiMobileDevice():
             data = self._afc_file_read(handle, int(file_stats['st_size']), mode)
             self._afc_file_close(handle)
         else:
-            if self.verbose:
-                self.log(" could not open file")
-            raise libiMobileDeviceIOException("could not open file %s for reading" % repr(path))
+            self._log(" could not open file")
+            raise libiMobileDeviceIOException("could not open file {0} for reading".format(repr(path)))
 
         return data
 
@@ -546,13 +606,13 @@ class libiMobileDevice():
         from_name:   (const char *) The fully-qualified path to rename from
         to_name:     (const char *) The fully-qualified path to rename to
         '''
-        self._log_location("from: '%s' to: '%s'" % (from_name, to_name))
+        self._log_location("from: {0} to: {1}".format(repr(from_name), repr(to_name)))
 
         error = self.lib.afc_rename_path(byref(self.afc),
                                          str(from_name),
                                          str(to_name))
-        if error and self.verbose:
-            self.log(" ERROR: %s" % self.afc_error(error))
+        if error:
+            self._log(" ERROR: {0}".format(self._afc_error(error)))
 
     def remove(self, path):
         '''
@@ -561,12 +621,12 @@ class libiMobileDevice():
         client  (afc_client_t) The client to use
         path    (const char *) The fully-qualified path to delete
         '''
-        self._log_location("'%s'" % path)
+        self._log_location("{0}".format(repr(path)))
 
         error = self.lib.afc_remove_path(byref(self.afc), str(path))
 
-        if error and self.verbose:
-            self.log(" ERROR: %s" % self.afc_error(error))
+        if error:
+            self._log_error(" ERROR: {0} path:{1}".format(self._afc_error(error), repr(path)))
 
     def stat(self, path):
         '''
@@ -580,24 +640,22 @@ class libiMobileDevice():
            'st_birthtime': xxx.yyy}
 
         '''
-        self._log_location("'%s'" % path)
+        self._log_location("{0}".format(repr(path)))
         return self._afc_get_file_info(path)
 
     def write(self, content, destination, mode='w'):
         '''
         Convenience method to write to path on iDevice
         '''
-        self._log_location(destination)
+        self._log_location("{0}".format(repr(destination)))
 
         handle = self._afc_file_open(destination, mode=mode)
         if handle is not None:
             success = self._afc_file_write(handle, content, mode=mode)
-            if self.verbose:
-                self.log(" success: %s" % success)
+            self._log(" success: {0}".format(success))
             self._afc_file_close(handle)
         else:
-            if self.verbose:
-                self.log(" could not open file for writing")
+            self._log(" could not open file for writing")
             raise libiMobileDeviceIOException("could not open file for writing")
 
     # ~~~ AFC functions ~~~
@@ -616,8 +674,8 @@ class libiMobileDevice():
         self._log_location()
 
         error = self.lib.afc_client_free(byref(self.afc)) & 0xFFFF
-        if error and self.verbose:
-            self.log(" ERROR: %s" % self.afc_error(error))
+        if error:
+            self._log_error(" ERROR: {0}".format(self._afc_error(error)))
 
     def _afc_client_new(self):
         '''
@@ -772,12 +830,12 @@ class libiMobileDevice():
          File closed
 
         '''
-        self._log_location(handle.value)
+        self._log_location("handle:{0}".format(handle.value))
 
         error = self.lib.afc_file_close(byref(self.afc),
                                         handle) & 0xFFFF
-        if error and self.verbose:
-            self.log(" ERROR: %s" % self._afc_error(error))
+        if error:
+            self._log_error(" ERROR: {0} handle:{1}".format(self._afc_error(error), handle))
 
     def _afc_file_open(self, filename, mode='r'):
         '''
@@ -801,7 +859,7 @@ class libiMobileDevice():
          error:      (afc_error_t) AFC_E_SUCCESS (0) on success or AFC_E_* error value
 
         '''
-        self._log_location("%s, mode='%s'" % (repr(filename), mode))
+        self._log_location("{0} mode='{1}'".format(repr(filename), mode))
 
         handle = c_ulonglong(0)
 
@@ -817,8 +875,7 @@ class libiMobileDevice():
                                            byref(handle)) & 0xFFFF
 
         if error:
-            if self.verbose:
-                self.log(" ERROR: %s" % self._afc_error(error))
+            self._log_error(" ERROR: {0} filename:{1}".format(self._afc_error(error), repr(filename)))
             return None
         else:
             return handle
@@ -842,7 +899,7 @@ class libiMobileDevice():
          error       (afc_error_t) AFC_E_SUCCESS (0) on success or AFC_E_* error value
 
         '''
-        self._log_location("%s, size=%d, mode='%s'" % (handle.value, size, mode))
+        self._log_location("handle:{0} size:{1:,} mode='{2}'".format(handle.value, size, mode))
 
         bytes_read = c_uint(0)
 
@@ -855,15 +912,13 @@ class libiMobileDevice():
                                            size,
                                            byref(bytes_read)) & 0xFFFF
             if error:
-                if self.verbose:
-                    self.log(" ERROR: %s" % self._afc_error(error))
+                self._log_error(" ERROR: {0} handle:{1}".format(self._afc_error(error), handle))
             return data
         else:
             data = create_string_buffer(size)
             error = self.lib.afc_file_read(byref(self.afc), handle, byref(data), size, byref(bytes_read))
             if error:
-                if self.verbose:
-                    self.log(" ERROR: %s" % self._afc_error(error))
+                self._log_error(" ERROR: {0} handle:{1}".format(self._afc_error(error), handle))
             return data.value
 
     def _afc_file_write(self, handle, content, mode='w'):
@@ -885,7 +940,7 @@ class libiMobileDevice():
          error:         (afc_error_t) AFC_E_SUCCESS (0) on success or AFC_E_* error value
 
         '''
-        self._log_location("handle=%d, mode='%s'" % (handle.value, mode))
+        self._log_location("handle:{0} mode='{1}'".format(handle.value, mode))
 
         bytes_written = c_uint(0)
 
@@ -903,8 +958,7 @@ class libiMobileDevice():
                                         len(content),
                                         byref(bytes_written)) & 0xFFFF
         if error:
-            if self.verbose:
-                self.log(" ERROR: %s" % self._afc_error(error))
+            self._log_error(" ERROR: {0} handle:{1}".format(self._afc_error(error), handle))
             return False
         return True
 
@@ -945,16 +999,14 @@ class libiMobileDevice():
                     device_info[item_list[i]] = item_list[i+1]
                 if self.verbose:
                     for key in device_info.keys():
-                        self.log("{0:>16}: {1}".format(key, device_info[key]))
+                        self._log("{0:>16}: {1}".format(key, device_info[key]))
             else:
-                if self.verbose:
-                    self.log(" ERROR: %s" % self._afc_error(error))
+                self._log(" ERROR: {0}".format(self._afc_error(error)))
         else:
-            if self.verbose:
-                self.log(" ERROR: AFC not initialized, can't get device info")
+            self._log(" ERROR: AFC not initialized, can't get device info")
         return device_info
 
-    def _afc_get_file_info(self, path):
+    def _afc_get_file_info(self, path, silent=False):
         '''
         Gets information about a specific file
 
@@ -976,7 +1028,7 @@ class libiMobileDevice():
            'st_birthtime': xxx.yyy}
 
         '''
-        self._log_location("'%s'" % path)
+        self._log_location("{0}".format(repr(path)))
 
         infolist_p = c_char * 1024
         infolist = POINTER(POINTER(infolist_p))()
@@ -985,8 +1037,8 @@ class libiMobileDevice():
                                            byref(infolist)) & 0xFFFF
         file_stats = {}
         if error:
-            if self.verbose:
-                self.log(" ERROR: %s" % self._afc_error(error))
+            if not silent or self.verbose:
+                self._log_error(" ERROR: {0} path:{1}".format(self._afc_error(error), repr(path)))
         else:
             num_items = 0
             item_list = []
@@ -997,33 +1049,54 @@ class libiMobileDevice():
                 if item_list[i].contents.value in ['st_mtime', 'st_birthtime']:
                     integer = item_list[i+1].contents.value[:10]
                     decimal = item_list[i+1].contents.value[10:]
-                    value = float("%s.%s" % (integer, decimal))
+                    value = float("{0}.{1}".format(integer, decimal))
                 else:
                     value = item_list[i+1].contents.value
                 file_stats[item_list[i].contents.value] = value
 
             if False and self.verbose:
                 for key in file_stats.keys():
-                    self.log(" %s: %s" % (key, file_stats[key]))
+                    self._log(" {0}: {1}".format(key, file_stats[key]))
         return file_stats
 
-    def _afc_read_directory(self, directory=''):
+    def _afc_make_directory(self, path):
+        '''
+        Creates a directory on the device. Does not create intermediate dirs.
+
+        Args:
+         client: (AFC_CLIENT_T) The client to use to make a directory
+         dir:    (const char *) The directory's fully-qualified path
+
+        Result:
+         error:  AFC_E_SUCCESS on success or an AFC_E_* error value
+        '''
+        self._log_location("{0}".format(repr(path)))
+
+        error = self.lib.afc_make_directory(byref(self.afc),
+                                            str(path)) & 0xFFFF
+        if error:
+            self._log_error(" ERROR: {0} path: {1}".format(self._afc_error(error), repr(path)))
+
+        return error
+
+    def _afc_read_directory(self, directory='', get_stats=True):
         '''
         Gets a directory listing of the directory requested
 
         Args:
-         client: (AFC_CLIENT_T) The client to get a directory listing from
-         dir:    (const char *) The directory to list (a fully-qualified path)
-         list:   (char ***) A char list of files in that directory, terminated by
-                  an empty string. NULL if there was an error.
-
+         client:    (AFC_CLIENT_T) The client to get a directory listing from
+         dir:       (const char *) The directory to list (a fully-qualified path)
+         list:      (char ***) A char list of files in that directory, terminated by
+                     an empty string. NULL if there was an error.
+         get_stats: If True, return full file stats for each file in dir (slower)
+                    If False, return filename only (faster)
         Result:
          error: AFC_E_SUCCESS on success or an AFC_E_* error value
          file_stats:
             {'<path_basename>': {<file_stats>} ...}
 
         '''
-        self._log_location("'%s'" % directory)
+        self._log_location("{0}".format(repr(directory)))
 
         file_stats = {}
         dirs_p = c_char_p
@@ -1032,8 +1105,7 @@ class libiMobileDevice():
                                             str(directory),
                                             byref(dirs)) & 0xFFFF
         if error:
-            if self.verbose:
-                self.log(" ERROR: %s" % self._afc_error(error))
+            self._log_error(" ERROR: {0} directory: {1}".format(self._afc_error(error), repr(directory)))
         else:
             num_dirs = 0
             dir_list = []
@@ -1049,7 +1121,10 @@ class libiMobileDevice():
                     path = '/' + this_item
                 else:
                     path = '/'.join([directory, this_item])
-                file_stats[os.path.basename(path)] = self._afc_get_file_info(path)
+                if get_stats:
+                    file_stats[os.path.basename(path)] = self._afc_get_file_info(path)
+                else:
+                    file_stats[os.path.basename(path)] = {}
             self.current_dir = directory
         return file_stats
 
@@ -1081,8 +1156,7 @@ class libiMobileDevice():
         error = self.lib.house_arrest_client_free(byref(self.house_arrest)) & 0xFFFF
         if error:
             error = error - 0x10000
-            if self.verbose:
-                self.log(" ERROR: %s" % self._house_arrest_error(error))
+            self._log_error(" ERROR: {0}".format(self._house_arrest_error(error)))
 
     def _house_arrest_client_new(self):
         '''
@@ -1115,12 +1189,11 @@ class libiMobileDevice():
             raise libiMobileDeviceException(error_description)
         else:
             if not house_arrest_client_t:
-                if self.verbose:
-                    self.log(" Could not start document sharing service")
-                    self.log("  1: Bad command")
-                    self.log("  2: Bad device")
-                    self.log("  3. Connection refused")
-                    self.log("  6. Bad version")
+                self._log(" Could not start document sharing service")
+                self._log("  1: Bad command")
+                self._log("  2: Bad device")
+                self._log("  3. Connection refused")
+                self._log("  6. Bad version")
                 return None
             else:
                 return house_arrest_client_t.contents
@@ -1175,11 +1248,9 @@ class libiMobileDevice():
 
         # To determine success, we need to inspect the returned plist
         if 'Status' in result:
-            if self.verbose:
-                self.log("          STATUS: %s" % result['Status'])
+            self._log("          STATUS: {0}".format(result['Status']))
         elif 'Error' in result:
-            if self.verbose:
-                self.log("           ERROR: %s" % result['Error'])
+            self._log("           ERROR: {0}".format(result['Error']))
             raise libiMobileDeviceException(result['Error'])
 
     def _house_arrest_send_command(self, command=None, appid=None):
@@ -1203,13 +1274,12 @@ class libiMobileDevice():
                   to call house_arrest_get_result().
 
         '''
-        self._log_location("command='%s' appid='%s'" % (command, appid))
+        self._log_location("command={0} appid={1}".format(repr(command), repr(appid)))
 
         commands = ['VendContainer', 'VendDocuments']
 
         if command not in commands:
-            if self.verbose:
-                self.log(" ERROR: available commands: %s" % ', '.join(commands))
+            self._log(" ERROR: available commands: {0}".format(', '.join(commands)))
             return
 
         _command = create_string_buffer(command)
@@ -1262,8 +1332,7 @@ class libiMobileDevice():
 
         if error:
             error = error - 0x10000
-            if self.verbose:
-                self.log(" ERROR: %s" % self._idevice_error(error))
+            self._log_error(" ERROR: {0}".format(self._idevice_error(error)))
 
     def _idevice_get_device_list(self):
         '''
@@ -1284,12 +1353,10 @@ class libiMobileDevice():
         if error:
             error = error - 0x10000
             if error == -3:
-                if self.verbose:
-                    self.log(" no connected devices")
+                self._log(" no connected devices")
             else:
                 device_list = None
-                if self.verbose:
-                    self.log(" ERROR: %s" % self._idevice_error(error))
+                self._log_error(" ERROR: {0}".format(self._idevice_error(error)))
         else:
             index = 0
             while devices[index]:
@@ -1297,8 +1364,7 @@ class libiMobileDevice():
                 if devices[index].contents.value not in device_list:
                     device_list.append(devices[index].contents.value)
                 index += 1
-            if self.verbose:
-                self.log(" %s" % repr(device_list))
+            self._log(" {0}".format(repr(device_list)))
         #self.lib.idevice_device_list_free()
         return device_list
 
@@ -1329,12 +1395,11 @@ class libiMobileDevice():
                 desc=self._idevice_error(error))
             raise libiMobileDeviceException(error_description)
         else:
-            if self.verbose:
-                if idevice_t.contents.conn_type == 1:
-                    self.log("       conn_type: CONNECTION_USBMUXD")
-                else:
-                    self.log("       conn_type: Unknown (%d)" % idevice_t.contents.conn_type)
-                self.log("            udid: %s" % idevice_t.contents.udid)
+            if idevice_t.contents.conn_type == 1:
+                self._log("       conn_type: CONNECTION_USBMUXD")
+            else:
+                self._log("       conn_type: Unknown ({0})".format(idevice_t.contents.conn_type))
+            self._log("            udid: {0}".format(idevice_t.contents.udid))
             return idevice_t.contents
 
     def _idevice_set_debug_level(self, debug):
@@ -1371,7 +1436,7 @@ class libiMobileDevice():
         else:
             # Get the number of apps
             #app_count = self.lib.plist_array_get_size(apps)
-            #self.log("       app_count: %d" % app_count)
+            #self._log("       app_count: {0}".format(app_count))
 
             # Convert the app plist to xml
             xml = POINTER(c_void_p)()
@@ -1387,9 +1452,9 @@ class libiMobileDevice():
                 elif 'CFBundleExecutable' in app:
                     app_name = app['CFBundleExecutable']
                 else:
-                    self.log(" unable to find app name in bundle:")
+                    self._log(" unable to find app name in bundle:")
                     for key in sorted(app.keys()):
-                        self.log("  %s   %s" % (repr(key), repr(app[key])))
+                        self._log("  {0}   {1}".format(repr(key), repr(app[key])))
                     continue
 
                 if not applist:
@@ -1405,7 +1470,7 @@ class libiMobileDevice():
             if self.verbose:
                 for app in sorted(installed_apps, key=lambda s: s.lower()):
                     attrs = {'app_name': app, 'app_id': installed_apps[app]['app_id'], 'app_version': installed_apps[app]['app_version']}
-                    self.log("  {app_name:<30}  {app_id:<40} {app_version}".format(**attrs))
+                    self._log("  {app_name:<30}  {app_id:<40} {app_version}".format(**attrs))
 
         self.plist_lib.plist_free(apps)
         return installed_apps
@@ -1448,7 +1513,7 @@ class libiMobileDevice():
         '''
         Specify the type of apps we want to browse
         '''
-        self._log_location("'%s', '%s'" % (app_type, domain))
+        self._log_location("{0}, {1}".format(repr(app_type), repr(domain)))
 
         self.lib.instproxy_client_options_add(self.client_options,
                                               app_type, domain, None)
@@ -1540,11 +1605,11 @@ class libiMobileDevice():
         self._log_location()
 
         lockdownd_client_t = POINTER(LOCKDOWND_CLIENT_T)()
-        SERVICE_NAME = create_string_buffer('calibre')
+        #SERVICE_NAME = create_string_buffer('calibre')
+        SERVICE_NAME = c_void_p()
         error = self.lib.lockdownd_client_new_with_handshake(byref(self.device),
                                                              byref(lockdownd_client_t),
                                                              SERVICE_NAME) & 0xFFFF
-
         if error:
             error = error - 0x10000
             error_description = self.LIB_ERROR_TEMPLATE.format(
@@ -1614,8 +1679,7 @@ class libiMobileDevice():
         '''
         self._log_location()
 
-        device_name_b = c_char * 32
-        device_name_p = POINTER(device_name_b)()
+        device_name_p = c_char_p()
         device_name = None
         error = self.lib.lockdownd_get_device_name(byref(self.control),
                                                    byref(device_name_p)) & 0xFFFF
@@ -1627,9 +1691,8 @@ class libiMobileDevice():
                 desc=self._lockdown_error(error))
             raise libiMobileDeviceException(error_description)
         else:
-            device_name = device_name_p.contents.value
-            if self.verbose:
-                self.log("     device_name: %s" % device_name)
+            device_name = device_name_p.value
+            self._log("     device_name: {0}".format(device_name))
         return device_name
 
     def _lockdown_get_value(self, requested_items=[]):
@@ -1777,11 +1840,9 @@ class libiMobileDevice():
         if self.control:
             error = self.lib.lockdownd_goodbye(byref(self.control)) & 0xFFFF
             error = error - 0x10000
-            if self.verbose:
-                self.log(" ERROR: %s" % self.error_lockdown(error))
+            self._log(" ERROR: {0}".format(self.error_lockdown(error)))
         else:
-            if self.verbose:
-                self.log(" connection already closed")
+            self._log(" connection already closed")
 
     def _lockdown_start_service(self, service_name):
         '''
@@ -1819,20 +1880,15 @@ class libiMobileDevice():
         '''
         Print msg to console
         '''
-        if not self.verbose:
-            return
-
         if msg:
-            debug_print(" %s" % msg)
+            debug_print(" {0}".format(msg))
         else:
             debug_print()
 
-    def _log_location(self, *args):
+    def _log_error(self, *args):
         '''
+        Print error message with location regardless of self.verbose
         '''
-        if not self.verbose:
-            return
-
         arg1 = arg2 = ''
 
         if len(args) > 0:
@@ -1840,5 +1896,21 @@ class libiMobileDevice():
         if len(args) > 1:
             arg2 = args[1]
 
-        self.log(self.LOCATION_TEMPLATE.format(cls=self.__class__.__name__,
-                 func=sys._getframe(1).f_code.co_name, arg1=arg1, arg2=arg2))
+        debug_print(self.LOCATION_TEMPLATE.format(cls=self.__class__.__name__,
+            func=sys._getframe(1).f_code.co_name, arg1=arg1, arg2=arg2))
+
+    def _log_location(self, *args):
+        '''
+        '''
+        arg1 = arg2 = ''
+
+        if len(args) > 0:
+            arg1 = args[0]
+        if len(args) > 1:
+            arg2 = args[1]
+
+        debug_print(self.LOCATION_TEMPLATE.format(cls=self.__class__.__name__,
+            func=sys._getframe(1).f_code.co_name, arg1=arg1, arg2=arg2))
+
+    def __null(self, *args, **kwargs):
+        pass

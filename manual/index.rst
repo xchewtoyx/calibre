@@ -29,6 +29,8 @@ Sections
    news
    viewer
    conversion
+   edit
+   diff
    metadata
    faq 
    tutorials
@@ -37,6 +39,8 @@ Sections
    develop
    glossary
 
+
+.. REMOVE_IN_PDF
 
 The main |app| user interface
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -69,6 +73,22 @@ Customizing |app|'s ebook conversion
    :maxdepth: 2
 
    conversion
+
+Editing ebooks
+^^^^^^^^^^^^^^^^
+
+.. toctree::
+   :maxdepth: 2
+
+   edit
+
+Comparing ebooks
+^^^^^^^^^^^^^^^^
+
+.. toctree::
+   :maxdepth: 2
+
+   diff
 
 Editing ebook metadata
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^

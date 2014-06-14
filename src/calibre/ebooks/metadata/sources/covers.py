@@ -61,7 +61,8 @@ def process_result(log, result):
     try:
         im = Image()
         im.load(data)
-        im.trim(10)
+        if getattr(plugin, 'auto_trim_covers', False):
+            im.trim(10)
         width, height = im.size
         fmt = im.format
 
@@ -100,7 +101,8 @@ def run_download(log, results, abort,
     wait_time = msprefs['wait_after_first_cover_result']
     found_results = {}
 
-    while True:
+    start_time = time.time()  # Use a global timeout to workaround misbehaving plugins that hang
+    while time.time() - start_time < 301:
         time.sleep(0.1)
         try:
             x = rq.get_nowait()

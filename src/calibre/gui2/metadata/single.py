@@ -27,6 +27,7 @@ from calibre.utils.config import tweaks
 from calibre.ebooks.metadata.book.base import Metadata
 from calibre.utils.localization import canonicalize_lang
 from calibre.utils.date import local_tz
+from calibre.library.comments import merge_comments as merge_two_comments
 
 BASE_TITLE = _('Edit Metadata')
 
@@ -44,7 +45,7 @@ class MetadataSingleDialogBase(ResizableDialog):
         self.rows_to_refresh = set()
         ResizableDialog.__init__(self, parent)
 
-    def setupUi(self, *args): # {{{
+    def setupUi(self, *args):  # {{{
         self.resize(990, 670)
 
         self.download_shortcut = QShortcut(self)
@@ -102,7 +103,7 @@ class MetadataSingleDialogBase(ResizableDialog):
             self.restoreGeometry(bytes(geom))
     # }}}
 
-    def create_basic_metadata_widgets(self): # {{{
+    def create_basic_metadata_widgets(self):  # {{{
         self.basic_metadata_widgets = []
 
         self.languages = LanguagesEdit(self)
@@ -159,7 +160,7 @@ class MetadataSingleDialogBase(ResizableDialog):
         self.series = SeriesEdit(self)
         self.clear_series_button = QToolButton(self)
         self.clear_series_button.setToolTip(
-               _('Clear series') )
+               _('Clear series'))
         self.clear_series_button.clicked.connect(self.series.clear)
         self.series_index = SeriesIndexEdit(self, self.series)
         self.basic_metadata_widgets.extend([self.series, self.series_index])
@@ -240,7 +241,7 @@ class MetadataSingleDialogBase(ResizableDialog):
 
     # }}}
 
-    def create_custom_metadata_widgets(self): # {{{
+    def create_custom_metadata_widgets(self):  # {{{
         self.custom_metadata_widgets_parent = w = QWidget(self)
         layout = QGridLayout()
         w.setLayout(layout)
@@ -250,7 +251,7 @@ class MetadataSingleDialogBase(ResizableDialog):
         self.__custom_col_layouts = [layout]
     # }}}
 
-    def set_custom_metadata_tab_order(self, before=None, after=None): # {{{
+    def set_custom_metadata_tab_order(self, before=None, after=None):  # {{{
         sto = QWidget.setTabOrder
         if getattr(self, 'custom_metadata_widgets', []):
             ans = self.custom_metadata_widgets
@@ -289,7 +290,7 @@ class MetadataSingleDialogBase(ResizableDialog):
         if callable(self.set_current_callback):
             self.set_current_callback(id_)
         # Commented out as it doesn't play nice with Next, Prev buttons
-        #self.fetch_metadata_button.setFocus(Qt.OtherFocusReason)
+        # self.fetch_metadata_button.setFocus(Qt.OtherFocusReason)
 
     # Miscellaneous interaction methods {{{
     def update_window_title(self, *args):
@@ -332,14 +333,15 @@ class MetadataSingleDialogBase(ResizableDialog):
 
     def cover_from_format(self, *args):
         ext = self.formats_manager.get_selected_format()
-        if ext is None: return
+        if ext is None:
+            return
         if ext == 'pdf':
             return self.get_pdf_cover()
         try:
             mi, ext = self.formats_manager.get_selected_format_metadata(self.db,
                     self.book_id)
         except (IOError, OSError) as err:
-            if getattr(err, 'errno', None) == errno.EACCES: # Permission denied
+            if getattr(err, 'errno', None) == errno.EACCES:  # Permission denied
                 import traceback
                 fname = err.filename if err.filename else 'file'
                 error_dialog(self, _('Permission denied'),
@@ -371,7 +373,7 @@ class MetadataSingleDialogBase(ResizableDialog):
                          show=True)
             return
 
-    def update_from_mi(self, mi, update_sorts=True, merge_tags=True):
+    def update_from_mi(self, mi, update_sorts=True, merge_tags=True, merge_comments=False):
         if not mi.is_null('title'):
             self.title.current_val = mi.title
             if update_sorts:
@@ -414,7 +416,12 @@ class MetadataSingleDialogBase(ResizableDialog):
             if langs:
                 self.languages.current_val = langs
         if mi.comments and mi.comments.strip():
-            self.comments.current_val = mi.comments
+            val = mi.comments
+            if val and merge_comments:
+                cval = self.comments.current_val
+                if cval:
+                    val = merge_two_comments(cval, val)
+            self.comments.current_val = val
 
     def fetch_metadata(self, *args):
         d = FullFetch(self.cover.pixmap(), self)
@@ -436,7 +443,7 @@ class MetadataSingleDialogBase(ResizableDialog):
                     # update_from_mi from changing the pubdate
                     mi.pubdate = datetime(pd.year, pd.month, pd.day,
                             tzinfo=local_tz)
-                self.update_from_mi(mi)
+                self.update_from_mi(mi, merge_comments=msprefs['append_comments'])
             if d.cover_pixmap is not None:
                 self.cover.current_val = pixmap_to_data(d.cover_pixmap)
 
@@ -455,7 +462,6 @@ class MetadataSingleDialogBase(ResizableDialog):
             if d.cover_pixmap is not None:
                 self.cover.current_val = pixmap_to_data(d.cover_pixmap)
 
-
     # }}}
 
     def apply_changes(self):
@@ -471,7 +477,7 @@ class MetadataSingleDialogBase(ResizableDialog):
                 self.books_to_refresh |= getattr(widget, 'books_to_refresh',
                         set([]))
             except (IOError, OSError) as err:
-                if getattr(err, 'errno', None) == errno.EACCES: # Permission denied
+                if getattr(err, 'errno', None) == errno.EACCES:  # Permission denied
                     import traceback
                     fname = getattr(err, 'filename', None)
                     p = 'Locked file: %s\n\n'%fname if fname else ''
@@ -564,7 +570,7 @@ class MetadataSingleDialogBase(ResizableDialog):
             try:
                 signal.disconnect()
             except:
-                pass # Fails if view format was never connected
+                pass  # Fails if view format was never connected
         disconnect(self.view_format)
         for b in ('next_button', 'prev_button'):
             x = getattr(self, b, None)
@@ -587,7 +593,7 @@ class Splitter(QSplitter):
         self.frame_resized.emit(ev)
         return QSplitter.resizeEvent(self, ev)
 
-class MetadataSingleDialog(MetadataSingleDialogBase): # {{{
+class MetadataSingleDialog(MetadataSingleDialogBase):  # {{{
 
     def do_layout(self):
         if len(self.db.custom_column_label_map) == 0:
@@ -716,7 +722,7 @@ class MetadataSingleDialog(MetadataSingleDialogBase): # {{{
 
 # }}}
 
-class DragTrackingWidget(QWidget): # {{{
+class DragTrackingWidget(QWidget):  # {{{
 
     def __init__(self, parent, on_drag_enter):
         QWidget.__init__(self, parent)
@@ -727,7 +733,7 @@ class DragTrackingWidget(QWidget): # {{{
 
 # }}}
 
-class MetadataSingleDialogAlt1(MetadataSingleDialogBase): # {{{
+class MetadataSingleDialogAlt1(MetadataSingleDialogBase):  # {{{
 
     cc_two_column = False
     one_line_comments_toolbar = True
@@ -881,7 +887,7 @@ class MetadataSingleDialogAlt1(MetadataSingleDialogBase): # {{{
 
 # }}}
 
-class MetadataSingleDialogAlt2(MetadataSingleDialogBase): # {{{
+class MetadataSingleDialogAlt2(MetadataSingleDialogBase):  # {{{
 
     cc_two_column = False
     one_line_comments_toolbar = True

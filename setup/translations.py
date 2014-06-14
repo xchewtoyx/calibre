@@ -6,29 +6,33 @@ __license__   = 'GPL v3'
 __copyright__ = '2009, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
-import os, tempfile, shutil, subprocess, glob, re, time, textwrap
+import os, tempfile, shutil, subprocess, glob, re, time, textwrap, cPickle, shlex
+from locale import normalize as normalize_locale
 from functools import partial
 
 from setup import Command, __appname__, __version__, require_git_master
 
 def qt_sources():
-    qtdir = glob.glob('/usr/src/qt-*')[-1]
+    # QT5XX: Change this
+    qtdir = '/usr/src/qt4'
     j = partial(os.path.join, qtdir)
     return list(map(j, [
-            'src/gui/widgets/qdialogbuttonbox.cpp',
+            'gui/widgets/qdialogbuttonbox.cpp',
     ]))
 
 class POT(Command):  # {{{
 
     description = 'Update the .pot translation template and upload it'
-    LP_BASE = os.path.join(os.path.dirname(os.path.dirname(Command.SRC)), 'calibre-translations')
-    LP_SRC = os.path.join(LP_BASE, 'src')
-    LP_PATH = os.path.join(LP_SRC, os.path.join(__appname__, 'translations'))
-    LP_ISO_PATH = os.path.join(LP_BASE, 'setup', 'iso_639')
+    TRANSLATIONS = os.path.join(os.path.dirname(Command.SRC), 'translations')
+
+    def tx(self, cmd, **kw):
+        kw['cwd'] = kw.get('cwd', self.TRANSLATIONS)
+        if hasattr(cmd, 'format'):
+            cmd = shlex.split(cmd)
+        return subprocess.check_call(['tx'] + cmd, **kw)
 
     def upload_pot(self, pot):
-        msg = 'Updated translations template'
-        subprocess.check_call(['bzr', 'commit', '-m', msg, pot])
+        self.tx('push -r calibre.main -s', cwd=self.TRANSLATIONS)
 
     def source_files(self):
         ans = []
@@ -119,7 +123,14 @@ class POT(Command):  # {{{
             os.remove(out.name)
             src = pot_header + '\n' + src
             src += '\n\n' + self.get_tweaks_docs()
-            pot = os.path.join(self.LP_PATH, __appname__+'.pot')
+            bdir = os.path.join(self.TRANSLATIONS, __appname__)
+            if not os.path.exists(bdir):
+                os.makedirs(bdir)
+            pot = os.path.join(bdir, 'main.pot')
+            # Workaround for bug in xgettext:
+            # https://savannah.gnu.org/bugs/index.php?41668
+            src = re.sub(r'#, python-brace-format\s+msgid ""\s+.*<code>{0:</code>',
+                   lambda m: m.group().replace('python-brace', 'no-python-brace'), src)
             with open(pot, 'wb') as f:
                 f.write(src)
             self.info('Translations template:', os.path.abspath(pot))
@@ -134,13 +145,17 @@ class Translations(POT):  # {{{
             'locales')
 
     def po_files(self):
-        return glob.glob(os.path.join(self.LP_PATH, '*.po'))
+        return glob.glob(os.path.join(self.TRANSLATIONS, __appname__, '*.po'))
 
     def mo_file(self, po_file):
         locale = os.path.splitext(os.path.basename(po_file))[0]
         return locale, os.path.join(self.DEST, locale, 'messages.mo')
 
     def run(self, opts):
+        l = {}
+        exec(compile(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lc_data.py'))
+             .read(), os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lc_data.py'), 'exec'), l, l)
+        lcdata = {k:{k1:v1 for k1, v1 in v} for k, v in l['data']}
         self.iso639_errors = []
         for f in self.po_files():
             locale, dest = self.mo_file(f)
@@ -150,7 +165,7 @@ class Translations(POT):  # {{{
             self.info('\tCompiling translations for', locale)
             subprocess.check_call(['msgfmt', '-o', dest, f])
             iscpo = {'bn':'bn_IN', 'zh_HK':'zh_CN'}.get(locale, locale)
-            iso639 = self.j(self.LP_ISO_PATH, '%s.po'%iscpo)
+            iso639 = self.j(self.TRANSLATIONS, 'iso_639', '%s.po'%iscpo)
 
             if os.path.exists(iso639):
                 self.check_iso639(iso639)
@@ -158,10 +173,18 @@ class Translations(POT):  # {{{
                 if self.newer(dest, iso639):
                     self.info('\tCopying ISO 639 translations for %s' % iscpo)
                     subprocess.check_call(['msgfmt', '-o', dest, iso639])
-            elif locale not in ('en_GB', 'en_CA', 'en_AU', 'si', 'ur', 'sc',
-                    'ltg', 'nds', 'te', 'yi', 'fo', 'sq', 'ast', 'ml', 'ku',
-                    'fr_CA', 'him', 'jv', 'ka', 'fur', 'ber'):
+            elif locale not in {
+                'en_GB', 'en_CA', 'en_AU', 'si', 'ur', 'sc', 'ltg', 'nds',
+                'te', 'yi', 'fo', 'sq', 'ast', 'ml', 'ku', 'fr_CA', 'him',
+                'jv', 'ka', 'fur', 'ber', 'my', 'fil', 'hy', 'ug'}:
                 self.warn('No ISO 639 translations for locale:', locale)
+
+            ln = normalize_locale(locale).partition('.')[0]
+            if ln in lcdata:
+                ld = lcdata[ln]
+                lcdest = self.j(self.d(dest), 'lcdata.pickle')
+                with open(lcdest, 'wb') as lcf:
+                    lcf.write(cPickle.dumps(ld, -1))
 
         if self.iso639_errors:
             for err in self.iso639_errors:
@@ -217,7 +240,7 @@ class Translations(POT):  # {{{
         if not self.newer(dest, files):
             return
         self.info('Calculating translation statistics...')
-        raw = self.get_stats(self.j(self.LP_PATH, 'calibre.pot'))
+        raw = self.get_stats(self.j(self.TRANSLATIONS, __appname__, 'main.pot'))
         total = int(raw.split(',')[-1].strip().split()[0])
         stats = {}
         for f in files:
@@ -240,61 +263,37 @@ class Translations(POT):  # {{{
 
 class GetTranslations(Translations):  # {{{
 
-    description = 'Get updated translations from Launchpad'
-    BRANCH = 'lp:~kovid/calibre/translations'
-    LP_BASE = os.path.dirname(POT.LP_SRC)
-    CMSG = 'Updated translations'
+    description = 'Get updated translations from Transifex'
 
     @property
-    def modified_translations(self):
-        raw = subprocess.check_output(['bzr', 'status', '-S', self.LP_PATH]).strip()
-        ans = []
-        for line in raw.splitlines():
-            line = line.strip()
-            if line.startswith('M') and line.endswith('.po'):
-                ans.append(line.split()[-1])
-        return ans
-
-    def resolve_conflicts(self):
-        conflict = False
-        for line in subprocess.check_output(['bzr', 'status'], cwd=self.LP_BASE).splitlines():
-            if line == 'conflicts:':
-                conflict = True
-                break
-        if not conflict:
-            raise Exception('bzr merge failed and no conflicts found')
-        subprocess.check_call(['bzr', 'resolve', '--take-other'], cwd=self.LP_BASE)
+    def is_modified(self):
+        return bool(subprocess.check_output('git status --porcelain'.split(), cwd=self.TRANSLATIONS))
 
     def run(self, opts):
         require_git_master()
-        if not self.modified_translations:
-            try:
-                subprocess.check_call(['bzr', 'merge', self.BRANCH], cwd=self.LP_BASE)
-            except subprocess.CalledProcessError:
-                self.resolve_conflicts()
-        self.check_for_errors()
-
-        if self.modified_translations:
-            subprocess.check_call(['bzr', 'commit', '-m',
-                self.CMSG], cwd=self.LP_BASE)
+        self.tx('pull -a')
+        if self.is_modified:
+            self.check_for_errors()
+            self.upload_to_vcs()
         else:
-            print('No updated translations available')
+            print ('No translations were updated')
 
     def check_for_errors(self):
         errors = os.path.join(tempfile.gettempdir(), 'calibre-translation-errors')
         if os.path.exists(errors):
             shutil.rmtree(errors)
         os.mkdir(errors)
-        pofilter = ('pofilter', '-i', self.LP_PATH, '-o', errors,
+        tpath = self.j(self.TRANSLATIONS, __appname__)
+        pofilter = ('pofilter', '-i', tpath, '-o', errors,
                 '-t', 'accelerators', '-t', 'escapes', '-t', 'variables',
-                #'-t', 'xmltags',
-                #'-t', 'brackets',
-                #'-t', 'emails',
-                #'-t', 'doublequoting',
-                #'-t', 'filepaths',
-                #'-t', 'numbers',
+                # '-t', 'xmltags',
+                # '-t', 'brackets',
+                # '-t', 'emails',
+                # '-t', 'doublequoting',
+                # '-t', 'filepaths',
+                # '-t', 'numbers',
                 '-t', 'options',
-                #'-t', 'urls',
+                # '-t', 'urls',
                 '-t', 'printf')
         subprocess.check_call(pofilter)
         errfiles = glob.glob(errors+os.sep+'*.po')
@@ -308,30 +307,46 @@ class GetTranslations(Translations):  # {{{
                     f.truncate()
                     f.write(raw)
 
-            subprocess.check_call(['pomerge', '-t', self.LP_PATH, '-i', errors, '-o',
-                self.LP_PATH])
+            subprocess.check_call(['pomerge', '-t', tpath, '-i', errors, '-o', tpath])
+            languages = []
+            for f in glob.glob(self.j(errors, '*.po')):
+                lc = os.path.basename(f).rpartition('.')[0]
+                languages.append(lc)
+            if languages:
+                print('Pushing fixes for languages: %s' % (', '.join(languages)))
+                self.tx('push -r calibre.main -t -l ' + ','.join(languages))
             return True
         return False
+
+    def upload_to_vcs(self):
+        print ('Uploading updated translations to version control')
+        cc = partial(subprocess.check_call, cwd=self.TRANSLATIONS)
+        cc('git add */*.po'.split())
+        cc('git commit -am'.split() + ['Updated translations'])
+        cc('git push'.split())
 
 # }}}
 
 class ISO639(Command):  # {{{
 
-    description = 'Compile translations for ISO 639 codes'
+    description = 'Compile language code maps for performance'
     DEST = os.path.join(os.path.dirname(POT.SRC), 'resources', 'localization',
             'iso639.pickle')
 
     def run(self, opts):
-        src = POT.LP_ISO_PATH
+        src = self.j(self.d(self.SRC), 'setup', 'iso_639_3.xml')
         if not os.path.exists(src):
             raise Exception(src + ' does not exist')
         dest = self.DEST
+        base = self.d(dest)
+        if not os.path.exists(base):
+            os.makedirs(base)
         if not self.newer(dest, [src, __file__]):
             self.info('Pickled code is up to date')
             return
         self.info('Pickling ISO-639 codes to', dest)
         from lxml import etree
-        root = etree.fromstring(open(self.j(src, 'iso_639_3.xml'), 'rb').read())
+        root = etree.fromstring(open(src, 'rb').read())
         by_2 = {}
         by_3b = {}
         by_3t = {}
@@ -345,7 +360,7 @@ class ISO639(Command):  # {{{
             threet = x.get('id')
             threeb = x.get('part2_code', None)
             if threeb is None:
-                # Only recognize langauges in ISO-639-2
+                # Only recognize languages in ISO-639-2
                 continue
             name = x.get('name')
 
@@ -375,3 +390,37 @@ class ISO639(Command):  # {{{
 
 # }}}
 
+class ISO3166(ISO639):  # {{{
+
+    description = 'Compile country code maps for performance'
+    DEST = os.path.join(os.path.dirname(POT.SRC), 'resources', 'localization',
+            'iso3166.pickle')
+
+    def run(self, opts):
+        src = self.j(self.d(self.SRC), 'setup', 'iso3166.xml')
+        if not os.path.exists(src):
+            raise Exception(src + ' does not exist')
+        dest = self.DEST
+        base = self.d(dest)
+        if not os.path.exists(base):
+            os.makedirs(base)
+        if not self.newer(dest, [src, __file__]):
+            self.info('Pickled code is up to date')
+            return
+        self.info('Pickling ISO-3166 codes to', dest)
+        from lxml import etree
+        root = etree.fromstring(open(src, 'rb').read())
+        codes = set()
+        three_map = {}
+        name_map = {}
+        for x in root.xpath('//iso_3166_entry'):
+            two = x.get('alpha_2_code')
+            three = x.get('alpha_3_code')
+            codes.add(two)
+            name_map[two] = x.get('name')
+            if three:
+                three_map[three] = two
+        from cPickle import dump
+        x = {'names':name_map, 'codes':frozenset(codes), 'three_map':three_map}
+        dump(x, open(dest, 'wb'), -1)
+# }}}

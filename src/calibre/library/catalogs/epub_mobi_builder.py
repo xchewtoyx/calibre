@@ -3,12 +3,12 @@
 __license__ = 'GPL v3'
 __copyright__ = '2010, Greg Riker'
 
-import datetime, htmlentitydefs, os, platform, re, shutil, time, unicodedata, zlib
+import datetime, os, platform, re, shutil, time, unicodedata, zlib
 from copy import deepcopy
 from xml.sax.saxutils import escape
 
 from calibre import (prepare_string_for_xml, strftime, force_unicode,
-        isbytestring)
+        isbytestring, replace_entities)
 from calibre.constants import isosx, cache_dir
 from calibre.customize.conversion import DummyReporter
 from calibre.customize.ui import output_profiles
@@ -18,7 +18,7 @@ from calibre.ebooks.metadata import author_to_author_sort
 from calibre.library.catalogs import AuthorSortMismatchException, EmptyCatalogException, \
                                      InvalidGenresSourceFieldException
 from calibre.ptempfile import PersistentTemporaryDirectory
-from calibre.utils.date import format_date, is_date_undefined, now as nowf
+from calibre.utils.date import format_date, is_date_undefined, now as nowf, as_local_time
 from calibre.utils.filenames import ascii_text, shorten_components_to
 from calibre.utils.icu import capitalize, collation_order, sort_key
 from calibre.utils.magick.draw import thumbnail
@@ -432,28 +432,7 @@ class CatalogBuilder(object):
         Return:
          s (str): converted string
         """
-        matches = re.findall("&#\d+;", s)
-        if len(matches) > 0:
-            hits = set(matches)
-            for hit in hits:
-                name = hit[2:-1]
-                try:
-                    entnum = int(name)
-                    s = s.replace(hit, unichr(entnum))
-                except ValueError:
-                    pass
-
-        matches = re.findall("&\w+;", s)
-        hits = set(matches)
-        amp = "&amp;"
-        if amp in hits:
-            hits.remove(amp)
-        for hit in hits:
-            name = hit[1:-1]
-            if htmlentitydefs.name2codepoint in name:
-                    s = s.replace(hit, unichr(htmlentitydefs.name2codepoint[name]))
-        s = s.replace(amp, "&")
-        return s
+        return replace_entities(s)
 
     def copy_catalog_resources(self):
         """ Copy resources from calibre source to self.catalog_path.
@@ -605,10 +584,11 @@ class CatalogBuilder(object):
                 if field_contents == '':
                     field_contents = None
 
-                if (self.db.metadata_for_field(rule['field'])['datatype'] == 'bool' and
+                # Handle condition where bools_are_tristate is False,
+                # field is a bool and contents is None, which is displayed as No
+                if (not self.db.prefs.get('bools_are_tristate') and
+                    self.db.metadata_for_field(rule['field'])['datatype'] == 'bool' and
                     field_contents is None):
-                    # Handle condition where field is a bool and contents is None,
-                    # which is displayed as No
                     field_contents = _('False')
 
                 if field_contents is not None:
@@ -940,7 +920,7 @@ class CatalogBuilder(object):
             if is_date_undefined(record['pubdate']):
                 this_title['date'] = None
             else:
-                this_title['date'] = strftime(u'%B %Y', record['pubdate'].timetuple())
+                this_title['date'] = strftime(u'%B %Y', as_local_time(record['pubdate']).timetuple())
 
             this_title['timestamp'] = record['timestamp']
 
@@ -1042,8 +1022,11 @@ class CatalogBuilder(object):
         data = self.plugin.search_sort_db(self.db, self.opts)
         data = self.process_exclusions(data)
 
-        if self.prefix_rules and self.DEBUG:
-            self.opts.log.info(" Added prefixes:")
+        if self.DEBUG:
+            if self.prefix_rules:
+                self.opts.log.info(" Added prefixes (bools_are_tristate: {0}):".format(self.db.prefs.get('bools_are_tristate')))
+            else:
+                self.opts.log.info(" No added prefixes")
 
         # Populate this_title{} from data[{},{}]
         titles = []
@@ -1233,7 +1216,7 @@ class CatalogBuilder(object):
         else:
             # Validate custom field is usable as a genre source
             field_md = self.db.metadata_for_field(self.opts.genre_source_field)
-            if not field_md['datatype'] in ['enumeration', 'text']:
+            if field_md is None or not field_md['datatype'] in ['enumeration', 'text']:
                 all_custom_fields = self.db.custom_field_keys()
                 eligible_custom_fields = []
                 for cf in all_custom_fields:
@@ -4447,21 +4430,21 @@ class CatalogBuilder(object):
         """
         excluded_tags = []
         for rule in self.opts.exclusion_rules:
-            if rule[1].lower() == 'tags':
+            if rule[1] == _('Tags'):
                 excluded_tags.extend(rule[2].split(','))
 
         # Remove dups
         excluded_tags = list(set(excluded_tags))
 
         # Report excluded books
-        if self.opts.verbose and excluded_tags:
+        if excluded_tags:
             self.opts.log.info(" Books excluded by tag:")
             data = self.db.get_data_as_dict(ids=self.opts.ids)
             for record in data:
                 matched = list(set(record['tags']) & set(excluded_tags))
                 if matched:
                     for rule in self.opts.exclusion_rules:
-                        if rule[1] == 'Tags' and rule[2] == str(matched[0]):
+                        if rule[1] == _('Tags') and rule[2] == str(matched[0]):
                             self.opts.log.info("  - '%s' by %s (Exclusion rule '%s')" %
                                 (record['title'], record['authors'][0], rule[0]))
 
@@ -4743,7 +4726,6 @@ class CatalogBuilder(object):
         Return:
          (list): filtered data_set
         """
-
         filtered_data_set = []
         exclusion_pairs = []
         exclusion_set = []
@@ -4794,7 +4776,8 @@ class CatalogBuilder(object):
                                 filtered_data_set.remove(record)
                             break
                         else:
-                            filtered_data_set.append(record)
+                            if record not in filtered_data_set:
+                                filtered_data_set.append(record)
                     else:
                         if (record not in filtered_data_set and
                             record not in exclusion_set):

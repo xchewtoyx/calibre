@@ -34,7 +34,7 @@ def astext(node):
     return etree.tostring(node, method='text', encoding=unicode,
                           with_tail=False).strip()
 
-class Worker(Thread): # {{{
+class Worker(Thread):  # {{{
 
     def __init__(self, sku, url, relevance, result_queue, br, timeout, log, plugin):
         Thread.__init__(self)
@@ -154,8 +154,8 @@ class Worker(Thread): # {{{
         # remove all attributes from tags
         desc = re.sub(r'<([a-zA-Z0-9]+)\s[^>]+>', r'<\1>', desc)
         # Collapse whitespace
-        #desc = re.sub('\n+', '\n', desc)
-        #desc = re.sub(' +', ' ', desc)
+        # desc = re.sub('\n+', '\n', desc)
+        # desc = re.sub(' +', ' ', desc)
         # Remove comments
         desc = re.sub(r'(?s)<!--.*?-->', '', desc)
         return sanitize_comments_html(desc)
@@ -183,14 +183,14 @@ class Edelweiss(Source):
         if sku:
             return 'http://edelweiss.abovethetreeline.com/ProductDetailPage.aspx?sku=%s'%sku
 
-    def get_book_url(self, identifiers): # {{{
+    def get_book_url(self, identifiers):  # {{{
         sku = identifiers.get('edelweiss', None)
         if sku:
             return 'edelweiss', sku, self._get_book_url(sku)
 
     # }}}
 
-    def get_cached_cover_url(self, identifiers): # {{{
+    def get_cached_cover_url(self, identifiers):  # {{{
         sku = identifiers.get('edelweiss', None)
         if not sku:
             isbn = identifiers.get('isbn', None)
@@ -199,49 +199,33 @@ class Edelweiss(Source):
         return self.cached_identifier_to_cover_url(sku)
     # }}}
 
-    def create_query(self, log, title=None, authors=None, identifiers={}): # {{{
+    def create_query(self, log, title=None, authors=None, identifiers={}):
         from urllib import urlencode
-        BASE_URL = 'http://edelweiss.abovethetreeline.com/CatalogOverview.aspx?'
+        BASE_URL = 'http://edelweiss.abovethetreeline.com/Browse.aspx?source=catalog&rg=4187&group=browse&pg=0&'
         params = {
-            'group':'search',
-            'searchType':999,
-            'searchOrgID':'',
-            'dateRange':0,
-            'isbn':'',
+            'browseType':'title', 'startIndex':0, 'savecook':1, 'sord':20, 'secSord':20, 'tertSord':20,
         }
-        for num in (0, 1, 2, 3, 4, 5, 6, 200, 201, 202, 204):
-            params['condition%d'%num] = 1
-            params['keywords%d'%num] = ''
-        title_key, author_key = 'keywords200', 'keywords201'
-
+        keywords = []
         isbn = check_isbn(identifiers.get('isbn', None))
-        found = False
         if isbn is not None:
-            params['isbn'] = isbn
-            found = True
-        elif title or authors:
+            keywords.append(isbn)
+        elif title:
             title_tokens = list(self.get_title_tokens(title))
             if title_tokens:
-                params[title_key] = ' '.join(title_tokens)
-                found = True
-            author_tokens = self.get_author_tokens(authors,
-                    only_first_author=True)
-            if author_tokens:
-                params[author_key] = ' '.join(author_tokens)
-                found = True
-
-        if not found:
+                keywords.extend(title_tokens)
+            # Searching with author names does not work on edelweiss
+            # author_tokens = self.get_author_tokens(authors,
+            #         only_first_author=True)
+            # if author_tokens:
+            #     keywords.extend(author_tokens)
+        if not keywords:
             return None
-
-        for k in (title_key, author_key, 'isbn'):
-            v = params[k]
-            if isinstance(v, unicode):
-                params[k] = v.encode('utf-8')
-
+        params['bsk'] = (' '.join(keywords)).encode('utf-8')
         return BASE_URL+urlencode(params)
+
     # }}}
 
-    def identify(self, log, result_queue, abort, title=None, authors=None, # {{{
+    def identify(self, log, result_queue, abort, title=None, authors=None,  # {{{
             identifiers={}, timeout=30):
         from urlparse import parse_qs
 
@@ -256,6 +240,7 @@ class Edelweiss(Source):
             if not query:
                 log.error('Insufficient metadata to construct query')
                 return
+            log('Using query URL:', query)
             try:
                 raw = br.open_novisit(query, timeout=timeout).read()
             except Exception as e:
@@ -268,9 +253,13 @@ class Edelweiss(Source):
                 log.exception('Failed to parse identify results')
                 return as_unicode(e)
 
+            has_isbn = check_isbn(identifiers.get('isbn', None)) is not None
+            if not has_isbn:
+                author_tokens = set(x.lower() for x in self.get_author_tokens(authors, only_first_author=True))
             for entry in CSSSelect('div.listRow div.listRowMain')(root):
-                a = entry.xpath('descendant::a[contains(@href, "sku=") and contains(@href, "ProductDetailPage.aspx")]')
-                if not a: continue
+                a = entry.xpath('descendant::a[contains(@href, "sku=") and contains(@href, "productDetailPage.aspx")]')
+                if not a:
+                    continue
                 href = a[0].get('href')
                 prefix, qs = href.partition('?')[0::2]
                 sku = parse_qs(qs).get('sku', None)
@@ -288,8 +277,18 @@ class Edelweiss(Source):
 
                     div = CSSSelect('div.format.attGroup')(entry)
                     text = astext(div[0]).lower()
-                    if 'audio' in text or 'mp3' in text: # Audio-book, ignore
+                    if 'audio' in text or 'mp3' in text:  # Audio-book, ignore
                         continue
+                    if not has_isbn:
+                        # edelweiss returns matches based only on title, so we
+                        # filter by author manually
+                        div = CSSSelect('div.contributor.attGroup')(entry)
+                        try:
+                            entry_authors = set(self.get_author_tokens([x.strip() for x in astext(div[0]).lower().split(',')]))
+                        except IndexError:
+                            entry_authors = set()
+                        if not entry_authors.issuperset(author_tokens):
+                            continue
                     entries.append((self._get_book_url(sku), sku))
 
         if (not entries and identifiers and title and authors and
@@ -300,8 +299,8 @@ class Edelweiss(Source):
         if not entries:
             return
 
-        workers = [Worker(sku, url, i, result_queue, br.clone_browser(), timeout, log, self)
-                   for i, (url, sku) in enumerate(entries[:5])]
+        workers = [Worker(skul, url, i, result_queue, br.clone_browser(), timeout, log, self)
+                   for i, (url, skul) in enumerate(entries[:5])]
 
         for w in workers:
             w.start()
@@ -321,7 +320,7 @@ class Edelweiss(Source):
 
     # }}}
 
-    def download_cover(self, log, result_queue, abort, # {{{
+    def download_cover(self, log, result_queue, abort,  # {{{
             title=None, authors=None, identifiers={}, timeout=30, get_best_cover=False):
         cached_url = self.get_cached_cover_url(identifiers)
         if cached_url is None:
@@ -362,6 +361,18 @@ if __name__ == '__main__':
     from calibre.ebooks.metadata.sources.test import (
         test_identify_plugin, title_test, authors_test, comments_test, pubdate_test)
     tests = [
+        (  # A title and author search
+         {'title': 'The Husband\'s Secret', 'authors':['Liane Moriarty']},
+         [title_test('The Husband\'s Secret', exact=True),
+                authors_test(['Liane Moriarty'])]
+        ),
+
+        (  # An isbn present in edelweiss
+         {'identifiers':{'isbn': '9780312621360'}, },
+         [title_test('Flame: A Sky Chasers Novel', exact=True),
+                authors_test(['Amy Kathleen Ryan'])]
+        ),
+
         # Multiple authors and two part title and no general description
         ({'identifiers':{'edelweiss':'0321180607'}},
         [title_test(
@@ -373,25 +384,12 @@ if __name__ == '__main__':
             comments_test('Jérôme Siméon'), lambda mi: bool(mi.comments and 'No title summary' not in mi.comments)
         ]),
 
-        (  # An isbn not present in edelweiss
-         {'identifiers':{'isbn': '9780316044981'}, 'title':'The Heroes',
-          'authors':['Joe Abercrombie']},
-            [title_test('The Heroes', exact=True),
-                authors_test(['Joe Abercrombie'])]
-
-        ),
-
-        ( # Pubdate
-         {'title':'The Great Gatsby', 'authors':['F. Scott Fitzgerald']},
-            [title_test('The great gatsby', exact=True),
-                authors_test(['F. Scott Fitzgerald']), pubdate_test(2004, 9, 29)]
-        ),
-
-
     ]
     start, stop = 0, len(tests)
 
     tests = tests[start:stop]
     test_identify_plugin(Edelweiss.name, tests)
+
+
 
 

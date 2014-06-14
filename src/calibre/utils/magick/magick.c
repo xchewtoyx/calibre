@@ -7,6 +7,9 @@
 
 // Ensure that the underlying MagickWand has not been deleted
 #define NULL_CHECK(x) if(self->wand == NULL) {PyErr_SetString(PyExc_ValueError, "Underlying ImageMagick Wand has been destroyed"); return x; }
+#define MAX(x, y) ((x > y) ? x: y)
+#define ABS(x) ((x < 0) ? -x : x)
+#define SQUARE(x) x*x
 
 // magick_set_exception {{{
 PyObject* magick_set_exception(MagickWand *wand) {
@@ -14,6 +17,15 @@ PyObject* magick_set_exception(MagickWand *wand) {
     char *desc = MagickGetException(wand, &ext);
     PyErr_SetString(PyExc_Exception, desc);
     MagickClearException(wand);
+    desc = MagickRelinquishMemory(desc);
+    return NULL;
+}
+
+PyObject* pw_iterator_set_exception(PixelIterator *pi) {
+    ExceptionType ext;
+    char *desc = PixelGetIteratorException(pi, &ext);
+    PyErr_SetString(PyExc_Exception, desc);
+    PixelClearIteratorException(pi);
     desc = MagickRelinquishMemory(desc);
     return NULL;
 }
@@ -525,6 +537,35 @@ magick_Image_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
     return (PyObject *)self;
 }
 
+// Image.constitute {{{
+static PyObject *
+magick_Image_constitute(magick_Image *self, PyObject *args) {
+    const char *map;
+	Py_ssize_t width, height;
+    PyObject *capsule;
+    MagickBooleanType res;
+    void *data;
+    
+    NULL_CHECK(NULL)
+    if (!PyArg_ParseTuple(args, "iisO", &width, &height, &map, &capsule)) return NULL;
+
+    if (!PyCapsule_CheckExact(capsule)) {
+        PyErr_SetString(PyExc_TypeError, "data is not a capsule object");
+        return NULL;
+    }
+
+    data = PyCapsule_GetPointer(capsule,  PyCapsule_GetName(capsule));
+    if (data == NULL) return NULL;
+
+    res = MagickConstituteImage(self->wand, width, height, map, CharPixel, data);
+
+    if (!res)
+        return magick_set_exception(self->wand);
+
+    Py_RETURN_NONE;
+}
+
+// }}}
 
 // Image.load {{{
 static PyObject *
@@ -840,6 +881,80 @@ magick_Image_trim(magick_Image *self, PyObject *args) {
 }
 // }}}
 
+// Image.remove_border {{{
+
+static size_t 
+magick_find_border(PixelIterator *pi, double fuzz, size_t img_width, double *reds, PixelWand** (*next)(PixelIterator*, size_t*)) {
+    size_t band = 0, width = 0, c = 0;
+    double *greens = NULL, *blues = NULL, red_average, green_average, blue_average, distance, first_row[3] = {0.0, 0.0, 0.0};
+    PixelWand **pixels = NULL;
+
+    greens = reds + img_width + 1; blues = greens + img_width + 1;
+
+    while ( (pixels = next(pi, &width)) != NULL ) {
+        red_average = 0; green_average = 0; blue_average = 0;
+        for (c = 0; c < width; c++) {
+            reds[c] = PixelGetRed(pixels[c]); greens[c] = PixelGetGreen(pixels[c]); blues[c] = PixelGetBlue(pixels[c]); 
+            /* PixelGetHSL(pixels[c], reds + c, greens + c, blues + c); */
+            red_average += reds[c]; green_average += greens[c]; blue_average += blues[c];
+        }
+        red_average /= MAX(1, width); green_average /= MAX(1, width); blue_average /= MAX(1, width);
+        distance = 0;
+        for (c = 0; c < width && distance < fuzz; c++) 
+            distance = MAX(distance, SQUARE((reds[c] - red_average)) + SQUARE((greens[c] - green_average)) + SQUARE((blues[c] - blue_average))); 
+        if (distance > fuzz) break;  // row is not homogeneous
+        if (band == 0) {first_row[0] = red_average; first_row[1] = blue_average; first_row[2] = green_average; }
+        else {
+            distance = SQUARE((first_row[0] - red_average)) + SQUARE((first_row[1] - green_average)) + SQUARE((first_row[2] - blue_average));
+            if (distance > fuzz) break; // this row's average color is far from the previous rows average color
+        }
+        band += 1;
+    }
+    return band;
+}
+
+static PyObject *
+magick_Image_remove_border(magick_Image *self, PyObject *args) {
+    double fuzz, *buf = NULL;
+    PixelIterator *pi = NULL;
+    size_t width, height, iwidth, iheight;
+    size_t top_band = 0, bottom_band = 0, left_band = 0, right_band = 0;
+    
+    NULL_CHECK(NULL)
+
+    if (!PyArg_ParseTuple(args, "d", &fuzz)) return NULL;
+    fuzz /= 255;
+
+    height = iwidth = MagickGetImageHeight(self->wand);
+    width  = iheight = MagickGetImageWidth(self->wand);
+    buf = PyMem_New(double, 3*(MAX(width, height)+1));
+    pi = NewPixelIterator(self->wand);
+    if (buf == NULL || pi == NULL) { PyErr_NoMemory(); goto end; }
+    top_band = magick_find_border(pi, fuzz, width, buf, &PixelGetNextIteratorRow);
+    if (top_band >= height) goto end;
+    PixelSetLastIteratorRow(pi);
+    bottom_band = magick_find_border(pi, fuzz, width, buf, &PixelGetPreviousIteratorRow);
+    if (bottom_band >= height) goto end;
+    if (!MagickTransposeImage(self->wand)) { magick_set_exception(self->wand); goto end; }
+    pi = DestroyPixelIterator(pi);
+    pi = NewPixelIterator(self->wand);
+    if (pi == NULL) { PyErr_NoMemory(); goto end; }
+    left_band = magick_find_border(pi, fuzz, iwidth, buf, &PixelGetNextIteratorRow);
+    if (left_band >= iheight) goto end;
+    PixelSetLastIteratorRow(pi);
+    right_band = magick_find_border(pi, fuzz, iwidth, buf, &PixelGetPreviousIteratorRow);
+    if (right_band >= iheight) goto end;
+    if (!MagickTransposeImage(self->wand)) { magick_set_exception(self->wand); goto end; }
+    if (!MagickCropImage(self->wand, width - left_band - right_band, height - top_band - bottom_band, left_band, top_band)) { magick_set_exception(self->wand); goto end; }
+end:
+    if (pi != NULL) pi = DestroyPixelIterator(pi);
+    if (buf != NULL) PyMem_Free(buf);
+    if (PyErr_Occurred() != NULL) return NULL;
+
+    return Py_BuildValue("kkkk", left_band, top_band, right_band, bottom_band);
+}
+// }}}
+
 // Image.thumbnail {{{
 
 static PyObject *
@@ -1039,6 +1154,22 @@ magick_Image_sharpen(magick_Image *self, PyObject *args) {
 }
 // }}}
 
+// Image.blur {{{
+
+static PyObject *
+magick_Image_blur(magick_Image *self, PyObject *args) {
+    double radius, sigma;
+   
+    NULL_CHECK(NULL)
+
+    if (!PyArg_ParseTuple(args, "dd", &radius, &sigma)) return NULL;
+
+    if (!MagickBlurImage(self->wand, radius, sigma)) return magick_set_exception(self->wand);
+
+    Py_RETURN_NONE;
+}
+// }}}
+
 // Image.quantize {{{
 
 static PyObject *
@@ -1166,6 +1297,41 @@ magick_Image_set_opacity(magick_Image *self, PyObject *args) {
 }
 // }}}
 
+// Image.colorspace {{{
+static PyObject *
+magick_Image_colorspace_getter(magick_Image *self, void *closure) {
+    NULL_CHECK(NULL)
+
+    return Py_BuildValue("i", MagickGetImageColorspace(self->wand));
+}
+
+static int
+magick_Image_colorspace_setter(magick_Image *self, PyObject *val, void *closure) {
+    int cs = RGBColorspace;
+
+    NULL_CHECK(-1)
+
+    if (val == NULL) {
+        PyErr_SetString(PyExc_TypeError, "Cannot delete image colorspace");
+        return -1;
+    }
+
+    if (!PyInt_Check(val)) {
+        PyErr_SetString(PyExc_TypeError, "Colorspace must be an integer");
+        return -1;
+    }
+
+    cs = (int)PyInt_AS_LONG(val);
+    if (!MagickSetImageColorspace(self->wand, cs)) {
+        PyErr_Format(PyExc_ValueError, "Could not set image colorspace to %d", cs);
+        return -1;
+    }
+
+    return 0;
+}
+
+// }}}
+
 // Image attr list {{{
 static PyMethodDef magick_Image_methods[] = {
     {"destroy", (PyCFunction)magick_Image_destroy, METH_VARARGS,
@@ -1173,6 +1339,10 @@ static PyMethodDef magick_Image_methods[] = {
 
     {"identify", (PyCFunction)magick_Image_identify, METH_VARARGS,
      "Identify an image from a byte buffer (string)"
+    },
+
+    {"constitute", (PyCFunction)magick_Image_constitute, METH_VARARGS,
+     "constitute(width, height, map, data) -> Create an image from raw (A)RGB data. map should be 'ARGB' or 'PRGB' or whatever is needed for data. data must be a PyCapsule object."
     },
 
     {"load", (PyCFunction)magick_Image_load, METH_VARARGS,
@@ -1229,6 +1399,10 @@ static PyMethodDef magick_Image_methods[] = {
      "trim(fuzz) \n\n Trim image."
     },
 
+    {"remove_border", (PyCFunction)magick_Image_remove_border, METH_VARARGS,
+     "remove_border(fuzz) \n\n Try to detect and remove borders from the image, better than the ImageMagick trim() method. Detects rows of the same color at each image edge. Where color similarity testing is based on the fuzz factor (a number between 0 and 255). Returns the number of columns/rows removed from the left, top, right and bottom edges of the image."
+    },
+
     {"crop", (PyCFunction)magick_Image_crop, METH_VARARGS,
      "crop(width, height, x, y) \n\n Crop image."
     },
@@ -1273,8 +1447,12 @@ static PyMethodDef magick_Image_methods[] = {
      "sharpen(radius, sigma) \n\n sharpens an image. We convolve the image with a Gaussian operator of the given radius and standard deviation (sigma). For reasonable results, the radius should be larger than sigma. Use a radius of 0 and MagickSharpenImage() selects a suitable radius for you." 
     },
 
+    {"blur", (PyCFunction)magick_Image_blur, METH_VARARGS,
+     "blur(radius, sigma) \n\n blurs an image. We convolve the image with a Gaussian operator of the given radius and standard deviation (sigma). For reasonable results, the radius should be larger than sigma. Use a radius of 0 and MagickBlurImage() selects a suitable radius for you." 
+    },
+
     {"despeckle", (PyCFunction)magick_Image_despeckle, METH_VARARGS,
-     "despeckle() \n\n reduces the speckle noise in an image while perserving the edges of the original image." 
+     "despeckle() \n\n reduces the speckle noise in an image while preserving the edges of the original image." 
     },
 
     {"quantize", (PyCFunction)magick_Image_quantize, METH_VARARGS,
@@ -1305,6 +1483,10 @@ static PyGetSetDef  magick_Image_getsetters[] = {
      (char *)"the image depth.",
      NULL},
 
+    {(char *)"colorspace_",
+     (getter)magick_Image_colorspace_getter, (setter)magick_Image_colorspace_setter,
+     (char *)"the image colorspace.",
+     NULL},
 
     {NULL}  /* Sentinel */
 };

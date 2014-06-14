@@ -75,7 +75,7 @@ class EbookIterator(BookmarksMixin):
                     return i
 
     def __enter__(self, processed=False, only_input_plugin=False,
-            run_char_count=True, read_anchor_map=True,
+            run_char_count=True, read_anchor_map=True, view_kepub=False,
             extract_embedded_fonts_for_qt=False):
         ''' Convert an ebook file into an exploded OEB book suitable for
         display in viewers/preprocessing etc. '''
@@ -85,7 +85,7 @@ class EbookIterator(BookmarksMixin):
         self.delete_on_exit = []
         self._tdir = TemporaryDirectory('_ebook_iter')
         self.base  = self._tdir.__enter__()
-        plumber = Plumber(self.pathtoebook, self.base, self.log)
+        plumber = Plumber(self.pathtoebook, self.base, self.log, view_kepub=view_kepub)
         plumber.setup_options()
         if self.pathtoebook.lower().endswith('.opf'):
             plumber.opts.dont_package = True
@@ -113,7 +113,8 @@ class EbookIterator(BookmarksMixin):
 
         self.book_format = os.path.splitext(self.pathtoebook)[1][1:].upper()
         if getattr(plumber.input_plugin, 'is_kf8', False):
-            self.book_format = 'KF8'
+            fs = ':joint' if getattr(plumber.input_plugin, 'mobi_is_joint', False) else ''
+            self.book_format = 'KF8' + fs
 
         self.opf = getattr(plumber.input_plugin, 'optimize_opf_parsing', None)
         if self.opf is None:
@@ -143,7 +144,7 @@ class EbookIterator(BookmarksMixin):
 
         cover = self.opf.cover
         if cover and self.ebook_ext in {'lit', 'mobi', 'prc', 'opf', 'fb2',
-                                        'azw', 'azw3'}:
+                                        'azw', 'azw3', 'docx'}:
             cfile = os.path.join(self.base, 'calibre_iterator_cover.html')
             rcpath = os.path.relpath(cover, self.base).replace(os.sep, '/')
             chtml = (TITLEPAGE%prepare_string_for_xml(rcpath, True)).encode('utf-8')

@@ -30,8 +30,8 @@ BOOK_EXTENSIONS = ['lrf', 'rar', 'zip', 'rtf', 'lit', 'txt', 'txtz', 'text', 'ht
                    'html', 'htmlz', 'xhtml', 'pdf', 'pdb', 'updb', 'pdr', 'prc', 'mobi', 'azw', 'doc',
                    'epub', 'fb2', 'djv', 'djvu', 'lrx', 'cbr', 'cbz', 'cbc', 'oebzip',
                    'rb', 'imp', 'odt', 'chm', 'tpz', 'azw1', 'pml', 'pmlz', 'mbp', 'tan', 'snb',
-                   'xps', 'oxps', 'azw4', 'book', 'zbf', 'pobi', 'docx', 'md',
-                   'textile', 'markdown', 'ibook', 'iba', 'azw3', 'ps']
+                   'xps', 'oxps', 'azw4', 'book', 'zbf', 'pobi', 'docx', 'docm', 'md',
+                   'textile', 'markdown', 'ibook', 'ibooks', 'iba', 'azw3', 'ps', 'kepub']
 
 class HTMLRenderer(object):
 
@@ -133,10 +133,13 @@ def render_html(path_to_html, width=590, height=750, as_xhtml=True):
     from PyQt4.QtWebKit import QWebPage
     from PyQt4.Qt import QEventLoop, QPalette, Qt, QUrl, QSize
     from calibre.gui2 import is_ok_to_use_qt
-    if not is_ok_to_use_qt(): return None
+    if not is_ok_to_use_qt():
+        return None
     path_to_html = os.path.abspath(path_to_html)
     with CurrentDir(os.path.dirname(path_to_html)):
         page = QWebPage()
+        settings = page.settings()
+        settings.setAttribute(settings.PluginsEnabled, False)
         pal = page.palette()
         pal.setBrush(QPalette.Background, Qt.white)
         page.setPalette(pal)
@@ -214,9 +217,9 @@ def calibre_cover(title, author_string, series_string=None,
         if cleanup:
             os.remove(font_path)
 
-UNIT_RE = re.compile(r'^(-*[0-9]*[.]?[0-9]*)\s*(%|em|ex|en|px|mm|cm|in|pt|pc)$')
+UNIT_RE = re.compile(r'^(-*[0-9]*[.]?[0-9]*)\s*(%|em|ex|en|px|mm|cm|in|pt|pc|rem)$')
 
-def unit_convert(value, base, font, dpi):
+def unit_convert(value, base, font, dpi, body_font_size=12):
     ' Return value in pts'
     if isinstance(value, (int, long, float)):
         return value
@@ -250,6 +253,8 @@ def unit_convert(value, base, font, dpi):
             result = value * 2.8346456693
         elif unit == 'cm':
             result = value * 28.346456693
+        elif unit == 'rem':
+            result = value * body_font_size
     return result
 
 def generate_masthead(title, output_path=None, width=600, height=60):

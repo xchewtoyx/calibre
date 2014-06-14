@@ -6,7 +6,7 @@ __license__   = 'GPL v3'
 __copyright__ = '2009, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
-import sys, os, textwrap, subprocess, shutil, tempfile, atexit, shlex, glob
+import sys, os, textwrap, subprocess, shutil, tempfile, atexit, glob
 
 from setup import (Command, islinux, isbsd, basenames, modules, functions,
         __appname__, __version__)
@@ -56,7 +56,7 @@ class Develop(Command):
     short_description = 'Setup a development environment for calibre'
     MODE = 0o755
 
-    sub_commands = ['build', 'resources', 'iso639', 'gui',]
+    sub_commands = ['build', 'resources', 'iso639', 'iso3166', 'gui',]
 
     def add_postinstall_options(self, parser):
         parser.add_option('--make-errors-fatal', action='store_true', default=False,
@@ -133,7 +133,6 @@ class Develop(Command):
         self.regain_privileges()
         self.consolidate_paths()
         self.write_templates()
-        self.setup_mount_helper()
         self.install_files()
         self.run_postinstall()
         self.install_env_module()
@@ -149,23 +148,6 @@ class Develop(Command):
                 f.write(HEADER.format(**self.template_args()))
         else:
             self.warn('Cannot install calibre environment module to: '+libdir)
-
-    def setup_mount_helper(self):
-        def warn():
-            self.warn('Failed to compile mount helper. Auto mounting of',
-                ' devices will not work')
-
-        src = os.path.join(self.SRC, 'calibre', 'devices', 'linux_mount_helper.c')
-        dest = os.path.join(self.staging_bindir, 'calibre-mount-helper')
-        self.info('Installing mount helper to '+ dest)
-        cflags = os.environ.get('OVERRIDE_CFLAGS', '-Wall -pedantic')
-        cflags = shlex.split(cflags)
-        p = subprocess.Popen(['gcc']+cflags+[src, '-o', dest])
-        ret = p.wait()
-        if ret != 0:
-            return warn()
-        self.manifest.append(dest)
-        return dest
 
     def install_files(self):
         pass
@@ -311,14 +293,14 @@ class Sdist(Command):
                 dest = os.path.join(tdir, self.d(f))
                 shutil.copy2(f, dest)
 
-        tbase = self.j(self.d(self.d(self.SRC)), 'calibre-translations')
-        for x in ('setup/iso_639', 'src/calibre/translations'):
-            destdir = self.j(tdir, x)
+        tbase = self.j(self.d(self.SRC), 'translations')
+        for x in ('iso_639', 'calibre'):
+            destdir = self.j(tdir, 'translations', x)
             if not os.path.exists(destdir):
-                os.mkdir(destdir)
-            for y in glob.glob(self.j(tbase, x, '*')):
+                os.makedirs(destdir)
+            for y in glob.glob(self.j(tbase, x, '*.po')) + glob.glob(self.j(tbase, x, '*.pot')):
                 dest = self.j(destdir, self.b(y))
-                if y.rpartition('.')[-1] not in {'pyc', 'pyo'} and not os.path.exists(dest):
+                if not os.path.exists(dest):
                     shutil.copy2(y, dest)
 
         self.info('\tCreating tarfile...')

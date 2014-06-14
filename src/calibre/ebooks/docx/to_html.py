@@ -6,17 +6,18 @@ from __future__ import (unicode_literals, division, absolute_import,
 __license__ = 'GPL v3'
 __copyright__ = '2013, Kovid Goyal <kovid at kovidgoyal.net>'
 
-import sys, os, re
+import sys, os, re, math
 from collections import OrderedDict, defaultdict
 
 from lxml import html
 from lxml.html.builder import (
     HTML, HEAD, TITLE, BODY, LINK, META, P, SPAN, BR, DIV, SUP, A, DT, DL, DD, H1)
 
+from calibre import guess_type
 from calibre.ebooks.docx.container import DOCX, fromstring
 from calibre.ebooks.docx.names import (
     XPath, is_tag, XML, STYLES, NUMBERING, FONTS, get, generate_anchor,
-    descendants, FOOTNOTES, ENDNOTES, children, THEMES)
+    descendants, FOOTNOTES, ENDNOTES, children, THEMES, SETTINGS)
 from calibre.ebooks.docx.styles import Styles, inherit, PageProperties
 from calibre.ebooks.docx.numbering import Numbering
 from calibre.ebooks.docx.fonts import Fonts
@@ -26,8 +27,12 @@ from calibre.ebooks.docx.footnotes import Footnotes
 from calibre.ebooks.docx.cleanup import cleanup_markup
 from calibre.ebooks.docx.theme import Theme
 from calibre.ebooks.docx.toc import create_toc
+from calibre.ebooks.docx.fields import Fields
+from calibre.ebooks.docx.settings import Settings
 from calibre.ebooks.metadata.opf2 import OPFCreator
 from calibre.utils.localization import canonicalize_lang, lang_as_iso639_1
+
+NBSP = '\xa0'
 
 class Text:
 
@@ -40,19 +45,22 @@ class Text:
 
 class Convert(object):
 
-    def __init__(self, path_or_stream, dest_dir=None, log=None, notes_text=None):
+    def __init__(self, path_or_stream, dest_dir=None, log=None, detect_cover=True, notes_text=None):
         self.docx = DOCX(path_or_stream, log=log)
         self.ms_pat = re.compile(r'\s{2,}')
         self.ws_pat = re.compile(r'[\n\r\t]')
         self.log = self.docx.log
+        self.detect_cover = detect_cover
         self.notes_text = notes_text or _('Notes')
         self.dest_dir = dest_dir or os.getcwdu()
         self.mi = self.docx.metadata
         self.body = BODY()
         self.theme = Theme()
+        self.settings = Settings()
         self.tables = Tables()
+        self.fields = Fields()
         self.styles = Styles(self.tables)
-        self.images = Images()
+        self.images = Images(self.log)
         self.object_map = OrderedDict()
         self.html = HTML(
             HEAD(
@@ -78,6 +86,7 @@ class Convert(object):
     def __call__(self):
         doc = self.docx.document
         relationships_by_id, relationships_by_type = self.docx.document_relationships
+        self.fields(doc, self.log)
         self.read_styles(relationships_by_type)
         self.images(relationships_by_id)
         self.layers = OrderedDict()
@@ -85,19 +94,28 @@ class Convert(object):
         self.framed_map = {}
         self.anchor_map = {}
         self.link_map = defaultdict(list)
+        self.link_source_map = {}
         paras = []
 
         self.log.debug('Converting Word markup to HTML')
+
         self.read_page_properties(doc)
+        self.current_rels = relationships_by_id
         for wp, page_properties in self.page_map.iteritems():
             self.current_page = page_properties
             if wp.tag.endswith('}p'):
                 p = self.convert_p(wp)
                 self.body.append(p)
                 paras.append(wp)
+
+        self.read_block_anchors(doc)
         self.styles.apply_contextual_spacing(paras)
+        # Apply page breaks at the start of every section, except the first
+        # section (since that will be the start of the file)
+        self.styles.apply_section_page_breaks(self.section_starts[1:])
 
         notes_header = None
+        orig_rid_map = self.images.rid_map
         if self.footnotes.has_notes:
             dl = DL()
             dl.set('class', 'notes')
@@ -110,6 +128,7 @@ class Convert(object):
                 dl[-1][0].tail = ']'
                 dl.append(DD())
                 paras = []
+                self.images.rid_map = self.current_rels = note.rels[0]
                 for wp in note:
                     if wp.tag.endswith('}tbl'):
                         self.tables.register(wp, self.styles)
@@ -120,7 +139,30 @@ class Convert(object):
                         paras.append(wp)
                 self.styles.apply_contextual_spacing(paras)
 
-        self.resolve_links(relationships_by_id)
+        for p, wp in self.object_map.iteritems():
+            if len(p) > 0 and not p.text and len(p[0]) > 0 and not p[0].text and p[0][0].get('class', None) == 'tab':
+                # Paragraph uses tabs for indentation, convert to text-indent
+                parent = p[0]
+                tabs = []
+                for child in parent:
+                    if child.get('class', None) == 'tab':
+                        tabs.append(child)
+                        if child.tail:
+                            break
+                    else:
+                        break
+                indent = len(tabs) * self.settings.default_tab_stop
+                style = self.styles.resolve(wp)
+                if style.text_indent is inherit or (hasattr(style.text_indent, 'endswith') and style.text_indent.endswith('pt')):
+                    if style.text_indent is not inherit:
+                        indent = float(style.text_indent[:-2]) + indent
+                    style.text_indent = '%.3gpt' % indent
+                    parent.text = tabs[-1].tail or ''
+                    map(parent.remove, tabs)
+
+        self.images.rid_map = orig_rid_map
+
+        self.resolve_links()
 
         self.styles.cascade(self.layers)
 
@@ -136,7 +178,7 @@ class Convert(object):
                 except (TypeError, ValueError):
                     lvl = 0
                 numbered.append((html_obj, num_id, lvl))
-        self.numbering.apply_markup(numbered, self.body, self.styles, self.object_map)
+        self.numbering.apply_markup(numbered, self.body, self.styles, self.object_map, self.images)
         self.apply_frames()
 
         if len(self.body) > 0:
@@ -168,14 +210,17 @@ class Convert(object):
                     notes_header.set('class', '%s notes-header' % cls)
                 break
 
+        self.fields.polish_markup(self.object_map)
+
         self.log.debug('Cleaning up redundant markup generated by Word')
-        cleanup_markup(self.html, self.styles)
+        self.cover_image = cleanup_markup(self.log, self.html, self.styles, self.dest_dir, self.detect_cover)
 
         return self.write(doc)
 
     def read_page_properties(self, doc):
         current = []
         self.page_map = OrderedDict()
+        self.section_starts = []
 
         for p in descendants(doc, 'w:p', 'w:tbl'):
             if p.tag.endswith('}tbl'):
@@ -185,13 +230,16 @@ class Convert(object):
             sect = tuple(descendants(p, 'w:sectPr'))
             if sect:
                 pr = PageProperties(sect)
-                for x in current + [p]:
+                paras = current + [p]
+                for x in paras:
                     self.page_map[x] = pr
+                self.section_starts.append(paras[0])
                 current = []
             else:
                 current.append(p)
 
         if current:
+            self.section_starts.append(current[0])
             last = XPath('./w:body/w:sectPr')(doc)
             pr = PageProperties(last)
             for x in current:
@@ -210,6 +258,7 @@ class Convert(object):
 
         nname = get_name(NUMBERING, 'numbering.xml')
         sname = get_name(STYLES, 'styles.xml')
+        sename = get_name(SETTINGS, 'settings.xml')
         fname = get_name(FONTS, 'fontTable.xml')
         tname = get_name(THEMES, 'theme1.xml')
         foname = get_name(FOOTNOTES, 'footnotes.xml')
@@ -219,17 +268,30 @@ class Convert(object):
         fonts = self.fonts = Fonts()
 
         foraw = enraw = None
+        forel, enrel = ({}, {}), ({}, {})
+        if sename is not None:
+            try:
+                seraw = self.docx.read(sename)
+            except KeyError:
+                self.log.warn('Settings %s do not exist' % sename)
+            else:
+                self.settings(fromstring(seraw))
+
         if foname is not None:
             try:
                 foraw = self.docx.read(foname)
             except KeyError:
                 self.log.warn('Footnotes %s do not exist' % foname)
+            else:
+                forel = self.docx.get_relationships(foname)
         if enname is not None:
             try:
                 enraw = self.docx.read(enname)
             except KeyError:
                 self.log.warn('Endnotes %s do not exist' % enname)
-        footnotes(fromstring(foraw) if foraw else None, fromstring(enraw) if enraw else None)
+            else:
+                enrel = self.docx.get_relationships(enname)
+        footnotes(fromstring(foraw) if foraw else None, forel, fromstring(enraw) if enraw else None, enrel)
 
         if fname is not None:
             embed_relationships = self.docx.get_relationships(fname)[0]
@@ -262,12 +324,12 @@ class Convert(object):
             except KeyError:
                 self.log.warn('Numbering styles %s do not exist' % nname)
             else:
-                numbering(fromstring(raw), self.styles)
+                numbering(fromstring(raw), self.styles, self.docx.get_relationships(nname)[0])
 
         self.styles.resolve_numbering(numbering)
 
     def write(self, doc):
-        toc = create_toc(doc, self.body, self.resolved_link_map, self.styles, self.object_map)
+        toc = create_toc(doc, self.body, self.resolved_link_map, self.styles, self.object_map, self.log)
         raw = html.tostring(self.html, encoding='utf-8', doctype='<!DOCTYPE html>')
         with open(os.path.join(self.dest_dir, 'index.html'), 'wb') as f:
             f.write(raw)
@@ -279,10 +341,37 @@ class Convert(object):
         opf = OPFCreator(self.dest_dir, self.mi)
         opf.toc = toc
         opf.create_manifest_from_files_in([self.dest_dir])
+        for item in opf.manifest:
+            if item.media_type == 'text/html':
+                item.media_type = guess_type('a.xhtml')[0]
         opf.create_spine(['index.html'])
-        with open(os.path.join(self.dest_dir, 'metadata.opf'), 'wb') as of, open(os.path.join(self.dest_dir, 'toc.ncx'), 'wb') as ncx:
+        if self.cover_image is not None:
+            opf.guide.set_cover(self.cover_image)
+        toc_file = os.path.join(self.dest_dir, 'toc.ncx')
+        with open(os.path.join(self.dest_dir, 'metadata.opf'), 'wb') as of, open(toc_file, 'wb') as ncx:
             opf.render(of, ncx, 'toc.ncx')
+        if os.path.getsize(toc_file) == 0:
+            os.remove(toc_file)
         return os.path.join(self.dest_dir, 'metadata.opf')
+
+    def read_block_anchors(self, doc):
+        doc_anchors = frozenset(XPath('./w:body/w:bookmarkStart[@w:name]')(doc))
+        if doc_anchors:
+            current_bm = set()
+            rmap = {v:k for k, v in self.object_map.iteritems()}
+            for p in descendants(doc, 'w:p', 'w:bookmarkStart[@w:name]'):
+                if p.tag.endswith('}p'):
+                    if current_bm and p in rmap:
+                        para = rmap[p]
+                        if 'id' not in para.attrib:
+                            para.set('id', generate_anchor(next(iter(current_bm)), frozenset(self.anchor_map.itervalues())))
+                        for name in current_bm:
+                            self.anchor_map[name] = para.get('id')
+                        current_bm = set()
+                elif p in doc_anchors:
+                    anchor = get(p, 'w:name')
+                    if anchor:
+                        current_bm.add(anchor)
 
     def convert_p(self, p):
         dest = P()
@@ -295,7 +384,20 @@ class Convert(object):
         current_hyperlink = None
         hl_xpath = XPath('ancestor::w:hyperlink[1]')
 
+        def p_parent(x):
+            # Ensure that nested <w:p> tags are handled. These can occur if a
+            # textbox is present inside a paragraph.
+            while True:
+                x = x.getparent()
+                try:
+                    if x.tag.endswith('}p'):
+                        return x
+                except AttributeError:
+                    break
+
         for x in descendants(p, 'w:r', 'w:bookmarkStart', 'w:hyperlink'):
+            if p_parent(x) is not p:
+                continue
             if x.tag.endswith('}r'):
                 span = self.convert_run(x)
                 if current_anchor is not None:
@@ -305,6 +407,7 @@ class Convert(object):
                     try:
                         hl = hl_xpath(x)[0]
                         self.link_map[hl].append(span)
+                        self.link_source_map[hl] = self.current_rels
                         x.set('is-link', '1')
                     except IndexError:
                         current_hyperlink = None
@@ -313,7 +416,13 @@ class Convert(object):
             elif x.tag.endswith('}bookmarkStart'):
                 anchor = get(x, 'w:name')
                 if anchor and anchor not in self.anchor_map:
+                    old_anchor = current_anchor
                     self.anchor_map[anchor] = current_anchor = generate_anchor(anchor, frozenset(self.anchor_map.itervalues()))
+                    if old_anchor is not None:
+                        # The previous anchor was not applied to any element
+                        for a, t in tuple(self.anchor_map.iteritems()):
+                            if t == old_anchor:
+                                self.anchor_map[a] = current_anchor
             elif x.tag.endswith('}hyperlink'):
                 current_hyperlink = x
 
@@ -352,7 +461,17 @@ class Convert(object):
         if not dest.text and len(dest) == 0:
             # Empty paragraph add a non-breaking space so that it is rendered
             # by WebKit
-            dest.text = '\xa0'
+            dest.text = NBSP
+
+        # If the last element in a block is a <br> the <br> is not rendered in
+        # HTML, unless it is followed by a trailing space. Word, on the other
+        # hand inserts a blank line for trailing <br>s.
+        if len(dest) > 0 and not dest[-1].tail:
+            if dest[-1].tag == 'br':
+                dest[-1].tail = NBSP
+            elif len(dest[-1]) > 0 and dest[-1][-1].tag == 'br' and not dest[-1][-1].tail:
+                dest[-1][-1].tail = NBSP
+
         return dest
 
     def wrap_elems(self, elems, wrapper):
@@ -366,9 +485,10 @@ class Convert(object):
             wrapper.append(elem)
         return wrapper
 
-    def resolve_links(self, relationships_by_id):
+    def resolve_links(self):
         self.resolved_link_map = {}
         for hyperlink, spans in self.link_map.iteritems():
+            relationships_by_id = self.link_source_map[hyperlink]
             span = spans[0]
             if len(spans) > 1:
                 span = self.wrap_elems(spans, SPAN())
@@ -393,6 +513,54 @@ class Convert(object):
             # hrefs that point nowhere give epubcheck a hernia. The element
             # should be styled explicitly by Word anyway.
             # span.set('href', '#')
+        rmap = {v:k for k, v in self.object_map.iteritems()}
+        for hyperlink, runs in self.fields.hyperlink_fields:
+            spans = [rmap[r] for r in runs if r in rmap]
+            if not spans:
+                continue
+            span = spans[0]
+            if len(spans) > 1:
+                span = self.wrap_elems(spans, SPAN())
+            span.tag = 'a'
+            tgt = hyperlink.get('target', None)
+            if tgt:
+                span.set('target', tgt)
+            tt = hyperlink.get('title', None)
+            if tt:
+                span.set('title', tt)
+            url = hyperlink.get('url', None)
+            if url is None:
+                anchor = hyperlink.get('anchor', None)
+                if anchor in self.anchor_map:
+                    span.set('href', '#' + self.anchor_map[anchor])
+                    continue
+                self.log.warn('Hyperlink field with unknown anchor: %s' % anchor)
+            else:
+                if url in self.anchor_map:
+                    span.set('href', '#' + self.anchor_map[url])
+                    continue
+                span.set('href', url)
+
+        for img, link, relationships_by_id in self.images.links:
+            parent = img.getparent()
+            idx = parent.index(img)
+            a = A(img)
+            a.tail, img.tail = img.tail, None
+            parent.insert(idx, a)
+            tgt = link.get('target', None)
+            if tgt:
+                a.set('target', tgt)
+            tt = link.get('title', None)
+            if tt:
+                a.set('title', tt)
+            rid = link['id']
+            if rid in relationships_by_id:
+                dest = relationships_by_id[rid]
+                if dest.startswith('#'):
+                    if dest[1:] in self.anchor_map:
+                        a.set('href', '#' + self.anchor_map[dest[1:]])
+                else:
+                    a.set('href', dest)
 
     def convert_run(self, run):
         ans = SPAN()
@@ -442,6 +610,11 @@ class Convert(object):
                     l.set('class', 'noteref')
                     text.add_elem(l)
                     ans.append(text.elem)
+            elif is_tag(child, 'w:tab'):
+                spaces = int(math.ceil((self.settings.default_tab_stop / 36) * 6))
+                text.add_elem(SPAN(NBSP * spaces))
+                ans.append(text.elem)
+                ans[-1].set('class', 'tab')
         if text.buf:
             setattr(text.elem, text.attr, ''.join(text.buf))
 
@@ -463,7 +636,7 @@ class Convert(object):
             if last_run[-1][1] == style:
                 last_run.append((html_obj, style))
             else:
-                self.framed.append((html_obj, style))
+                self.framed[-1].append((html_obj, style))
         else:
             last_run.append((html_obj, style))
 

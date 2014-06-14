@@ -56,7 +56,11 @@ class MOBIOutput(OutputFormatPlugin):
             help=_('Disable compression of the file contents.')
         ),
         OptionRecommendation(name='personal_doc', recommended_value='[PDOC]',
-            help=_('Tag marking book to be filed with Personal Docs')
+            help=_('Tag for MOBI files to be marked as personal documents.'
+                   ' This option has no effect on the conversion. It is used'
+                   ' only when sending MOBI files to a device. If the file'
+                   ' being sent has the specified tag, it will be marked as'
+                   ' a personal document when sent to the Kindle.')
         ),
         OptionRecommendation(name='mobi_ignore_margins',
             recommended_value=False,
@@ -148,7 +152,6 @@ class MOBIOutput(OutputFormatPlugin):
                         self.oeb.manifest.remove(self.oeb.manifest.hrefs[x.href])
                         x.href = articles_[0].href
 
-
             for sec in sections:
                 articles[id(sec)] = []
                 for a in list(sec):
@@ -179,7 +182,7 @@ class MOBIOutput(OutputFormatPlugin):
 
         mobi_type = opts.mobi_file_type
         if self.is_periodical:
-            mobi_type = 'old' # Amazon does not support KF8 periodicals
+            mobi_type = 'old'  # Amazon does not support KF8 periodicals
         create_kf8 = mobi_type in ('new', 'both')
 
         remove_html_cover(self.oeb, self.log)
@@ -188,11 +191,9 @@ class MOBIOutput(OutputFormatPlugin):
         self.check_for_periodical()
 
         if create_kf8:
-            # Split on pagebreaks so that the resulting KF8 works better with
-            # calibre's viewer, which does not support CSS page breaks
+            # Split on pagebreaks so that the resulting KF8 is faster to load
             from calibre.ebooks.oeb.transforms.split import Split
             Split()(self.oeb, self.opts)
-
 
         kf8 = self.create_kf8(resources, for_joint=mobi_type=='both'
                 ) if create_kf8 else None

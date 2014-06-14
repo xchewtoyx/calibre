@@ -2,6 +2,7 @@
 #include <Python.h>
 
 #include <stdlib.h>
+#include <fcntl.h>
 
 #define min(x, y) ((x < y) ? x : y)
 #define max(x, y) ((x > y) ? x : y)
@@ -13,11 +14,11 @@ speedup_parse_date(PyObject *self, PyObject *args) {
     long year, month, day, hour, minute, second, tzh = 0, tzm = 0, sign = 0;
     size_t len;
     if(!PyArg_ParseTuple(args, "s", &raw)) return NULL;
+    while ((*raw == ' ' || *raw == '\t' || *raw == '\n' || *raw == '\r' || *raw == '\f' || *raw == '\v') && *raw != 0) raw++;
     len = strlen(raw);
     if (len < 19) Py_RETURN_NONE;
 
     orig = raw;
-
 
     year = strtol(raw, &end, 10);
     if ((end - raw) != 4) Py_RETURN_NONE;
@@ -27,7 +28,6 @@ speedup_parse_date(PyObject *self, PyObject *args) {
     month = strtol(raw, &end, 10);
     if ((end - raw) != 2) Py_RETURN_NONE;
     raw += 3;
-    
 
     day = strtol(raw, &end, 10);
     if ((end - raw) != 2) Py_RETURN_NONE;
@@ -117,4 +117,7 @@ initspeedup(void) {
     "Implementation of methods in C for speed."
     );
     if (m == NULL) return;
+#ifdef O_CLOEXEC
+    PyModule_AddIntConstant(m, "O_CLOEXEC", O_CLOEXEC);
+#endif
 }

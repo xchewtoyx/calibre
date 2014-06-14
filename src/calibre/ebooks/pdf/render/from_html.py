@@ -10,6 +10,7 @@ __docformat__ = 'restructuredtext en'
 import json, os
 from future_builtins import map
 from math import floor
+from collections import defaultdict
 
 from PyQt4.Qt import (QObject, QPainter, Qt, QSize, QString, QTimer,
                       pyqtProperty, QEventLoop, QPixmap, QRect, pyqtSlot)
@@ -41,8 +42,8 @@ def get_page_size(opts, for_comic=False):  # {{{
             width, sep, height = opts.custom_size.partition('x')
             if height:
                 try:
-                    width = float(width)
-                    height = float(height)
+                    width = float(width.replace(',', '.'))
+                    height = float(height.replace(',', '.'))
                 except:
                     pass
                 else:
@@ -209,14 +210,18 @@ class PDFWriter(QObject):
         self.painter = QPainter(self.doc)
         self.doc.set_metadata(title=pdf_metadata.title,
                               author=pdf_metadata.author,
-                              tags=pdf_metadata.tags)
+                              tags=pdf_metadata.tags, mi=pdf_metadata.mi)
         self.doc_title = pdf_metadata.title
         self.doc_author = pdf_metadata.author
         self.painter.save()
         try:
             if self.cover_data is not None:
                 p = QPixmap()
-                p.loadFromData(self.cover_data)
+                try:
+                    p.loadFromData(self.cover_data)
+                except TypeError:
+                    self.log.warn('This ebook does not have a raster cover, cannot generate cover for PDF'
+                                  '. Cover type: %s' % type(self.cover_data))
                 if not p.isNull():
                     self.doc.init_page()
                     draw_image_page(QRect(*self.doc.full_page_rect),
@@ -253,7 +258,7 @@ class PDFWriter(QObject):
             return self.loop.exit(1)
         try:
             if not self.render_queue:
-                if self.toc is not None and len(self.toc) > 0 and not hasattr(self, 'rendered_inline_toc'):
+                if self.opts.pdf_add_toc and self.toc is not None and len(self.toc) > 0 and not hasattr(self, 'rendered_inline_toc'):
                     return self.render_inline_toc()
                 self.loop.exit()
             else:
@@ -306,7 +311,7 @@ class PDFWriter(QObject):
             evaljs('document.getElementById("MathJax_Message").style.display="none";')
 
     def get_sections(self, anchor_map):
-        sections = {}
+        sections = defaultdict(list)
         ci = os.path.abspath(os.path.normcase(self.current_item))
         if self.toc is not None:
             for toc in self.toc.flat():
@@ -319,8 +324,7 @@ class PDFWriter(QObject):
                     col = 0
                     if frag and frag in anchor_map:
                         col = anchor_map[frag]['column']
-                    if col not in sections:
-                        sections[col] = toc.text or _('Untitled')
+                    sections[col].append(toc.text or _('Untitled'))
 
         return sections
 
@@ -353,6 +357,7 @@ class PDFWriter(QObject):
         paged_display.layout();
         paged_display.fit_images();
         py_bridge.value = book_indexing.all_links_and_anchors();
+        window.scrollTo(0, 0); // This is needed as getting anchor positions could have caused the viewport to scroll
         '''%(self.margin_top, 0, self.margin_bottom))
 
         amap = self.bridge_value
@@ -375,7 +380,11 @@ class PDFWriter(QObject):
         mf = self.view.page().mainFrame()
         while True:
             if col in sections:
-                self.current_section = sections[col]
+                self.current_section = sections[col][0]
+            elif col - 1 in sections:
+                # Ensure we are using the last section on the previous page as
+                # the section for this page, since this page has no sections
+                self.current_section = sections[col-1][-1]
             self.doc.init_page()
             if self.header or self.footer:
                 evaljs('paged_display.update_header_footer(%d)'%self.current_page_num)

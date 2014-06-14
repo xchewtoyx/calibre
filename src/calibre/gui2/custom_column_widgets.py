@@ -9,10 +9,10 @@ from functools import partial
 
 from PyQt4.Qt import (QComboBox, QLabel, QSpinBox, QDoubleSpinBox, QDateTimeEdit,
         QDateTime, QGroupBox, QVBoxLayout, QSizePolicy, QGridLayout,
-        QSpacerItem, QIcon, QCheckBox, QWidget, QHBoxLayout, SIGNAL,
+        QSpacerItem, QIcon, QCheckBox, QWidget, QHBoxLayout,
         QPushButton, QMessageBox, QToolButton, Qt)
 
-from calibre.utils.date import qt_to_dt, now
+from calibre.utils.date import qt_to_dt, now, as_local_time, as_utc
 from calibre.gui2.complete2 import EditWithComplete
 from calibre.gui2.comments_editor import Editor as CommentsEditor
 from calibre.gui2 import UNDEFINED_QDATETIME, error_dialog
@@ -189,10 +189,10 @@ class DateTime(Base):
         l.addStretch(2)
 
         w = self.widgets[1]
-        format = cm['display'].get('date_format','')
-        if not format:
-            format = 'dd MMM yyyy hh:mm'
-        w.setDisplayFormat(format)
+        format_ = cm['display'].get('date_format','')
+        if not format_:
+            format_ = 'dd MMM yyyy hh:mm'
+        w.setDisplayFormat(format_)
         w.setCalendarPopup(True)
         w.setMinimumDateTime(UNDEFINED_QDATETIME)
         w.setSpecialValueText(_('Undefined'))
@@ -214,6 +214,12 @@ class DateTime(Base):
             val = qt_to_dt(val)
         return val
 
+    def normalize_db_val(self, val):
+        return as_local_time(val) if val is not None else None
+
+    def normalize_ui_val(self, val):
+        return as_utc(val) if val is not None else None
+
 class Comments(Base):
 
     def setup_ui(self, parent):
@@ -228,9 +234,12 @@ class Comments(Base):
         self.widgets = [self._box]
 
     def setter(self, val):
-        if val is None:
+        if not val or not val.strip():
             val = ''
-        self._tb.html = comments_to_html(val)
+        else:
+            val = comments_to_html(val)
+        self._tb.html = val
+        self._tb.wyswyg_dirtied()
 
     def getter(self):
         val = unicode(self._tb.html).strip()
@@ -318,7 +327,8 @@ class Text(Base):
         self.widgets[1].update_items_cache(values)
         val = self.db.get_custom(book_id, num=self.col_id, index_is_id=True)
         if isinstance(val, list):
-            val.sort(key=sort_key)
+            if not self.col_metadata.get('display', {}).get('is_names', False):
+                val.sort(key=sort_key)
         self.initial_val = val
         val = self.normalize_db_val(val)
 
@@ -823,6 +833,12 @@ class BulkDateTime(BulkBase):
             val = qt_to_dt(val)
         return val
 
+    def normalize_db_val(self, val):
+        return as_local_time(val) if val is not None else None
+
+    def normalize_ui_val(self, val):
+        return as_utc(val) if val is not None else None
+
 class BulkSeries(BulkBase):
 
     def setup_ui(self, parent):
@@ -960,7 +976,7 @@ class RemoveTags(QWidget):
         layout.addWidget(self.checkbox)
         layout.addStretch(1)
         self.setLayout(layout)
-        self.connect(self.checkbox, SIGNAL('stateChanged(int)'), self.box_touched)
+        self.checkbox.stateChanged[int].connect(self.box_touched)
 
     def box_touched(self, state):
         if state:

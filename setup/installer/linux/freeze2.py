@@ -14,17 +14,18 @@ from setup import Command, modules, basenames, functions, __version__, \
 
 SITE_PACKAGES = ['PIL', 'dateutil', 'dns', 'PyQt4', 'mechanize',
         'sip.so', 'BeautifulSoup.py', 'cssutils', 'encutils', 'lxml',
-        'sipconfig.py', 'xdg', 'dbus', '_dbus_bindings.so', 'dbus_bindings.py',
+        'sipconfig.py', 'xdg', 'dbus', '_dbus_bindings.so',
         '_dbus_glib_bindings.so', 'netifaces.so', '_psutil_posix.so',
-        '_psutil_linux.so', 'psutil', 'cssselect']
+        '_psutil_linux.so', 'psutil', 'cssselect', 'apsw.so']
 
 QTDIR          = '/usr/lib/qt4'
-QTDLLS         = ('QtCore', 'QtGui', 'QtNetwork', 'QtSvg', 'QtXml', 'QtWebKit', 'QtDBus')
+QTDLLS         = ('QtCore', 'QtGui', 'QtNetwork', 'QtSvg', 'QtXml', 'QtWebKit', 'QtDBus', 'QtXmlPatterns')
 MAGICK_PREFIX = '/usr'
+is64bit = platform.architecture()[0] == '64bit'
 binary_includes = [
                 '/usr/bin/pdftohtml',
                 '/usr/bin/pdfinfo',
-                '/usr/lib/libusb-1.0.so.0',
+                '/usr/lib/libusb-1.0.so.0' if is64bit else '/lib/libusb-1.0.so.0',
                 '/usr/lib/libmtp.so.9',
                 '/usr/lib/libglib-2.0.so.0',
                 '/usr/bin/pdftoppm',
@@ -65,10 +66,10 @@ binary_includes = [
                 '/usr/lib/libicui18n.so.49',
                 '/usr/lib/libicuuc.so.49',
                 '/usr/lib/libicuio.so.49',
+                '/usr/lib/libdbus-1.so.3',
                 ]
 binary_includes += [os.path.join(QTDIR, 'lib%s.so.4'%x) for x in QTDLLS]
 
-is64bit = platform.architecture()[0] == '64bit'
 arch = 'x86_64' if is64bit else 'i686'
 
 
@@ -86,7 +87,6 @@ class LinuxFreeze(Command):
         self.initbase()
         self.copy_libs()
         self.copy_python()
-        self.compile_mount_helper()
         self.build_launchers()
         self.create_tarfile()
 
@@ -144,13 +144,6 @@ class LinuxFreeze(Command):
             else:
                 shutil.copyfile(x, d)
 
-    def compile_mount_helper(self):
-        self.info('Compiling mount helper...')
-        dest = self.j(self.bin_dir, 'calibre-mount-helper')
-        subprocess.check_call(['gcc', '-Wall', '-pedantic',
-            self.j(self.SRC, 'calibre', 'devices',
-                'linux_mount_helper.c'), '-o', dest])
-
     def copy_python(self):
         self.info('Copying python...')
 
@@ -191,12 +184,17 @@ class LinuxFreeze(Command):
             if os.path.isdir(x):
                 shutil.copytree(x, self.j(dest, self.b(x)),
                         ignore=ignore_in_lib)
-            if os.path.isfile(x) and ext in ('.py', '.so'):
+            elif os.path.isfile(x) and ext in ('.py', '.so'):
                 shutil.copy2(x, dest)
+            else:
+                raise ValueError('%s does not exist in site-packages' % x)
 
         for x in os.listdir(self.SRC):
-            shutil.copytree(self.j(self.SRC, x), self.j(dest, x),
-                    ignore=ignore_in_lib)
+            if os.path.isdir(self.j(self.SRC, x)):
+                shutil.copytree(self.j(self.SRC, x), self.j(dest, x),
+                        ignore=ignore_in_lib)
+            else:
+                shutil.copy2(self.j(self.SRC, x), self.j(dest, x))
         for x in ('trac',):
             x = self.j(dest, 'calibre', x)
             if os.path.exists(x):
@@ -281,6 +279,12 @@ class LinuxFreeze(Command):
         modules['console'].append('calibre.linux')
         basenames['console'].append('calibre_postinstall')
         functions['console'].append('main')
+        c_launcher = '/tmp/calibre-c-launcher'
+        lsrc = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'launcher.c')
+        cmd = ['gcc', '-O2', '-DMAGICK_BASE="%s"' % self.magick_base, '-o', c_launcher, lsrc, ]
+        self.info('Compiling launcher')
+        self.run_builder(cmd, verbose=False)
+
         for typ in ('console', 'gui', ):
             self.info('Processing %s launchers'%typ)
             for mod, bname, func in zip(modules[typ], basenames[typ],
@@ -290,20 +294,6 @@ class LinuxFreeze(Command):
                 xflags += ['-DMODULE="%s"'%mod, '-DBASENAME="%s"'%bname,
                     '-DFUNCTION="%s"'%func]
 
-                launcher = textwrap.dedent('''\
-                #!/bin/sh
-                path=`readlink -f $0`
-                base=`dirname $path`
-                lib=$base/lib
-                export QT_ACCESSIBILITY=0 # qt-at-spi causes crashes and performance issues in various distros, so disable it
-                export LD_LIBRARY_PATH=$lib:$LD_LIBRARY_PATH
-                export MAGICK_HOME=$base
-                export MAGICK_CONFIGURE_PATH=$lib/{1}/config
-                export MAGICK_CODER_MODULE_PATH=$lib/{1}/modules-Q16/coders
-                export MAGICK_CODER_FILTER_PATH=$lib/{1}/modules-Q16/filters
-                exec $base/bin/{0} "$@"
-                ''')
-
                 dest = self.j(self.obj_dir, bname+'.o')
                 if self.newer(dest, [src, __file__]+headers):
                     self.info('Compiling', bname)
@@ -311,8 +301,7 @@ class LinuxFreeze(Command):
                     self.run_builder(cmd, verbose=False)
                 exe = self.j(self.bin_dir, bname)
                 sh = self.j(self.base, bname)
-                with open(sh, 'wb') as f:
-                    f.write(launcher.format(bname, self.magick_base))
+                shutil.copy2(c_launcher, sh)
                 os.chmod(sh,
                     stat.S_IREAD|stat.S_IEXEC|stat.S_IWRITE|stat.S_IRGRP|stat.S_IXGRP|stat.S_IROTH|stat.S_IXOTH)
 
@@ -389,8 +378,13 @@ class LinuxFreeze(Command):
                     mod = __import__(sys.calibre_module, fromlist=[1])
                     func = getattr(mod, sys.calibre_function)
                     return func()
-                except SystemExit:
-                    raise
+                except SystemExit as err:
+                    if err.code is None:
+                        return 0
+                    if isinstance(err.code, int):
+                        return err.code
+                    print (err.code)
+                    return 1
                 except:
                     import traceback
                     traceback.print_exc()

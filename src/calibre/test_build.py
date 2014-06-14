@@ -13,7 +13,29 @@ Test a binary calibre build to ensure that all needed binary images/libraries ha
 '''
 
 import cStringIO
-from calibre.constants import plugins, iswindows
+from calibre.constants import plugins, iswindows, islinux
+
+def test_dbus():
+    import dbus
+    bus = dbus.SystemBus()
+    if not bus.list_names():
+        raise ValueError('Failed to list names on the system bus')
+    bus = dbus.SessionBus()
+    if not bus.list_names():
+        raise ValueError('Failed to list names on the session bus')
+    del bus
+    print ('dbus OK!')
+
+def test_regex():
+    import regex
+    if regex.findall(r'(?i)(a)(b)', 'ab cd AB 1a1b') != [('a', 'b'), ('A', 'B')]:
+        raise ValueError('regex module failed on a simple search')
+    print ('regex OK!')
+
+def test_html5lib():
+    import html5lib.html5parser  # noqa
+    from html5lib import parse  # noqa
+    print ('html5lib OK!')
 
 def test_plugins():
     for name in plugins:
@@ -39,13 +61,6 @@ def test_winutil():
         raise RuntimeError('win_pnp_drives returned no drives')
     print ('win_pnp_drives OK!')
 
-def test_win32():
-    from calibre.utils.winshell import desktop
-    d = desktop()
-    if not d:
-        raise RuntimeError('winshell failed')
-    print ('winshell OK! (%s is the desktop)'%d)
-
 def test_sqlite():
     import sqlite3
     conn = sqlite3.connect(':memory:')
@@ -54,8 +69,15 @@ def test_sqlite():
         raise RuntimeError('Failed to load sqlite extension')
     print ('sqlite OK!')
 
+def test_apsw():
+    import apsw
+    conn = apsw.Connection(':memory:')
+    conn.close()
+    print ('apsw OK!')
+
 def test_qt():
-    from PyQt4.Qt import (QWebView, QDialog, QImageReader, QNetworkAccessManager)
+    from PyQt4.Qt import (QDialog, QImageReader, QNetworkAccessManager)
+    from PyQt4.QtWebKit import QWebView
     fmts = set(map(unicode, QImageReader.supportedImageFormats()))
     testf = set(['jpg', 'png', 'mng', 'svg', 'ico', 'gif'])
     if testf.intersection(fmts) != testf:
@@ -91,10 +113,15 @@ def test_unrar():
     test_basic()
     print ('Unrar OK!')
 
+def test_ssl():
+    import ssl
+    ssl
+    print ('SSL OK!')
+
 def test_icu():
-    from calibre.utils.icu import _icu_not_ok
-    if _icu_not_ok:
-        raise RuntimeError('ICU module not loaded/valid')
+    print ('Testing ICU')
+    from calibre.utils.icu_test import test_build
+    test_build()
     print ('ICU OK!')
 
 def test_wpd():
@@ -111,19 +138,43 @@ def test_woff():
     test()
     print ('WOFF ok!')
 
+def test_magick():
+    print ('Testing tinycss tokenizer')
+    from calibre.utils.magick import create_canvas
+    i = create_canvas(100, 100)
+    from calibre.gui2.tweak_book.editor.canvas import qimage_to_magick, magick_to_qimage
+    img = magick_to_qimage(i)
+    i = qimage_to_magick(img)
+    print ('magick OK!')
+
+def test_tokenizer():
+    from tinycss.tokenizer import c_tokenize_flat
+    if c_tokenize_flat is None:
+        raise ValueError('tinycss C tokenizer not loaded')
+    from tinycss.tests.main import run_tests
+    run_tests(for_build=True)
+    print('tinycss tokenizer OK!')
+
 def test():
     test_plugins()
     test_lxml()
+    test_ssl()
     test_sqlite()
+    test_apsw()
     test_imaging()
     test_unrar()
     test_icu()
     test_woff()
     test_qt()
+    test_html5lib()
+    test_regex()
+    test_magick()
+    test_tokenizer()
     if iswindows:
-        test_win32()
         test_winutil()
         test_wpd()
+    if islinux:
+        test_dbus()
 
 if __name__ == '__main__':
     test()

@@ -14,19 +14,23 @@ from functools import partial
 from calibre.ebooks.oeb.polish.container import get_container
 from calibre.ebooks.oeb.polish.stats import StatsCollector
 from calibre.ebooks.oeb.polish.subset import subset_all_fonts
+from calibre.ebooks.oeb.polish.embed import embed_all_fonts
 from calibre.ebooks.oeb.polish.cover import set_cover
 from calibre.ebooks.oeb.polish.replace import smarten_punctuation
 from calibre.ebooks.oeb.polish.jacket import (
     replace_jacket, add_or_replace_jacket, find_existing_jacket, remove_jacket)
+from calibre.ebooks.oeb.polish.css import remove_unused_css
 from calibre.utils.logging import Log
 
 ALL_OPTS = {
+    'embed': False,
     'subset': False,
     'opf': None,
     'cover': None,
     'jacket': False,
     'remove_jacket':False,
     'smarten_punctuation':False,
+    'remove_unused_css':False,
 }
 
 SUPPORTED = {'EPUB', 'AZW3'}
@@ -46,6 +50,13 @@ changes needed for the desired effect.</p>
 {0}
 <p>Note that polishing only works on files in the %s formats.</p>\
 ''')%_(' or ').join('<b>%s</b>'%x for x in SUPPORTED),
+
+'embed': _('''\
+<p>Embed all fonts that are referenced in the document and are not already embedded.
+This will scan your computer for the fonts, and if they are found, they will be
+embedded into the document.</p>
+<p>Please ensure that you have the proper license for embedding the fonts used in this document.</p>
+'''),
 
 'subset': _('''\
 <p>Subsetting fonts means reducing an embedded font to contain
@@ -81,6 +92,13 @@ typographically correct equivalents.</p>
 <p>Note that the algorithm can sometimes generate incorrect results, especially
 when single quotes at the start of contractions are involved.</p>
 '''),
+
+'remove_unused_css': _('''\
+<p>Remove all unused CSS rules from stylesheets and &lt;style&gt; tags. Some books
+created from production templates can have a large number of extra CSS rules
+that dont match any actual content. These extra rules can slow down readers
+that need to parse them all.</p>
+'''),
 }
 
 def hfix(name, raw):
@@ -89,6 +107,7 @@ def hfix(name, raw):
     raw = raw.replace('\n\n', '__XX__')
     raw = raw.replace('\n', ' ')
     raw = raw.replace('__XX__', '\n')
+    raw = raw.replace('&lt;', '<').replace('&gt;', '>')
     return raw
 
 CLI_HELP = {x:hfix(x, re.sub('<.*?>', '', y)) for x, y in HELP.iteritems()}
@@ -110,60 +129,84 @@ def update_metadata(ebook, new_opf):
         stream.truncate()
         stream.write(opf.render())
 
-def polish(file_map, opts, log, report):
+def polish_one(ebook, opts, report):
     rt = lambda x: report('\n### ' + x)
+    jacket = None
+    changed = False
+
+    if opts.subset or opts.embed:
+        stats = StatsCollector(ebook, do_embed=opts.embed)
+
+    if opts.opf:
+        changed = True
+        rt(_('Updating metadata'))
+        update_metadata(ebook, opts.opf)
+        jacket = find_existing_jacket(ebook)
+        if jacket is not None:
+            replace_jacket(ebook, jacket)
+            report(_('Updated metadata jacket'))
+        report(_('Metadata updated\n'))
+
+    if opts.cover:
+        changed = True
+        rt(_('Setting cover'))
+        set_cover(ebook, opts.cover, report)
+        report('')
+
+    if opts.jacket:
+        changed = True
+        rt(_('Inserting metadata jacket'))
+        if jacket is None:
+            if add_or_replace_jacket(ebook):
+                report(_('Existing metadata jacket replaced'))
+            else:
+                report(_('Metadata jacket inserted'))
+        else:
+            report(_('Existing metadata jacket replaced'))
+        report('')
+
+    if opts.remove_jacket:
+        rt(_('Removing metadata jacket'))
+        if remove_jacket(ebook):
+            report(_('Metadata jacket removed'))
+            changed = True
+        else:
+            report(_('No metadata jacket found'))
+        report('')
+
+    if opts.smarten_punctuation:
+        rt(_('Smartening punctuation'))
+        if smarten_punctuation(ebook, report):
+            changed = True
+        report('')
+
+    if opts.embed:
+        rt(_('Embedding referenced fonts'))
+        if embed_all_fonts(ebook, stats, report):
+            changed = True
+        report('')
+
+    if opts.subset:
+        rt(_('Subsetting embedded fonts'))
+        if subset_all_fonts(ebook, stats.font_stats, report):
+            changed = True
+        report('')
+
+    if opts.remove_unused_css:
+        rt(_('Removing unused CSS rules'))
+        if remove_unused_css(ebook, report):
+            changed = True
+        report('')
+
+    return changed
+
+
+def polish(file_map, opts, log, report):
     st = time.time()
     for inbook, outbook in file_map.iteritems():
         report(_('## Polishing: %s')%(inbook.rpartition('.')[-1].upper()))
         ebook = get_container(inbook, log)
-        jacket = None
-
-        if opts.subset:
-            stats = StatsCollector(ebook)
-
-        if opts.opf:
-            rt(_('Updating metadata'))
-            update_metadata(ebook, opts.opf)
-            jacket = find_existing_jacket(ebook)
-            if jacket is not None:
-                replace_jacket(ebook, jacket)
-                report(_('Updated metadata jacket'))
-            report(_('Metadata updated\n'))
-
-        if opts.cover:
-            rt(_('Setting cover'))
-            set_cover(ebook, opts.cover, report)
-            report('')
-
-        if opts.jacket:
-            rt(_('Inserting metadata jacket'))
-            if jacket is None:
-                if add_or_replace_jacket(ebook):
-                    report(_('Existing metadata jacket replaced'))
-                else:
-                    report(_('Metadata jacket inserted'))
-            else:
-                report(_('Existing metadata jacket replaced'))
-            report('')
-
-        if opts.remove_jacket:
-            rt(_('Removing metadata jacket'))
-            if remove_jacket(ebook):
-                report(_('Metadata jacket removed'))
-            else:
-                report(_('No metadata jacket found'))
-            report('')
-
-        if opts.smarten_punctuation:
-            rt(_('Smartening punctuation'))
-            smarten_punctuation(ebook, report)
-            report('')
-
-        if opts.subset:
-            rt(_('Subsetting embedded fonts'))
-            subset_all_fonts(ebook, stats.font_stats, report)
-            report('')
-
+        polish_one(ebook, opts, report)
         ebook.commit(outbook)
         report('-'*70)
     report(_('Polishing took: %.1f seconds')%(time.time()-st))
@@ -190,6 +233,15 @@ def gui_polish(data):
         log(msg)
     return '\n\n'.join(report)
 
+def tweak_polish(container, actions):
+    opts = ALL_OPTS.copy()
+    opts.update(actions)
+    O = namedtuple('Options', ' '.join(ALL_OPTS.iterkeys()))
+    opts = O(**opts)
+    report = []
+    changed = polish_one(container, opts, report.append)
+    return report, changed
+
 def option_parser():
     from calibre.utils.config import OptionParser
     USAGE = '%prog [options] input_file [output_file]\n\n' + re.sub(
@@ -197,6 +249,7 @@ def option_parser():
     parser = OptionParser(usage=USAGE)
     a = parser.add_option
     o = partial(a, default=False, action='store_true')
+    o('--embed-fonts', '-e', dest='embed', help=CLI_HELP['embed'])
     o('--subset-fonts', '-f', dest='subset', help=CLI_HELP['subset'])
     a('--cover', '-c', help=_(
         'Path to a cover image. Changes the cover specified in the ebook. '
@@ -206,6 +259,7 @@ def option_parser():
     o('--jacket', '-j', help=CLI_HELP['jacket'])
     o('--remove-jacket', help=CLI_HELP['remove_jacket'])
     o('--smarten-punctuation', '-p', help=CLI_HELP['smarten_punctuation'])
+    o('--remove-unused-css', '-u', help=CLI_HELP['remove_unused_css'])
 
     o('--verbose', help=_('Produce more verbose output, useful for debugging.'))
 

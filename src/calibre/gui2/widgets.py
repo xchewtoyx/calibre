@@ -8,7 +8,7 @@ import re, os
 from PyQt4.Qt import (QIcon, QFont, QLabel, QListWidget, QAction,
         QListWidgetItem, QTextCharFormat, QApplication, QSyntaxHighlighter,
         QCursor, QColor, QWidget, QPixmap, QSplitterHandle, QToolButton,
-        QVariant, Qt, SIGNAL, pyqtSignal, QRegExp, QSize, QSplitter, QPainter,
+        QVariant, Qt, pyqtSignal, QRegExp, QSize, QSplitter, QPainter,
         QLineEdit, QComboBox, QPen, QGraphicsScene, QMenu, QStringListModel,
         QCompleter, QStringList, QTimer, QRect, QGraphicsView, QByteArray)
 
@@ -65,8 +65,9 @@ class FilenamePattern(QWidget, Ui_Form):  # {{{
         QWidget.__init__(self, parent)
         self.setupUi(self)
 
-        self.connect(self.test_button, SIGNAL('clicked()'), self.do_test)
-        self.connect(self.re.lineEdit(), SIGNAL('returnPressed()'), self.do_test)
+        self.test_button.clicked[()].connect(self.do_test)
+        self.re.lineEdit().returnPressed[()].connect(self.do_test)
+        self.filename.returnPressed[()].connect(self.do_test)
         self.re.lineEdit().textChanged.connect(lambda x: self.changed_signal.emit())
 
     def initialize(self, defaults=False):
@@ -236,7 +237,7 @@ class ImageDropMixin(object):  # {{{
 
     def handle_image_drop(self, pmap):
         self.set_pixmap(pmap)
-        self.cover_changed.emit(pixmap_to_data(pmap))
+        self.cover_changed.emit(pixmap_to_data(pmap, quality=100))
 
     def dragMoveEvent(self, event):
         event.acceptProposedAction()
@@ -247,7 +248,7 @@ class ImageDropMixin(object):  # {{{
     def set_pixmap(self, pmap):
         self.setPixmap(pmap)
 
-    def contextMenuEvent(self, ev):
+    def build_context_menu(self):
         cm = QMenu(self)
         paste = cm.addAction(_('Paste Cover'))
         copy = cm.addAction(_('Copy Cover'))
@@ -255,7 +256,10 @@ class ImageDropMixin(object):  # {{{
             paste.setEnabled(False)
         copy.triggered.connect(self.copy_to_clipboard)
         paste.triggered.connect(self.paste_from_clipboard)
-        cm.exec_(ev.globalPos())
+        return cm
+
+    def contextMenuEvent(self, ev):
+        self.build_context_menu().exec_(ev.globalPos())
 
     def copy_to_clipboard(self):
         QApplication.instance().clipboard().setPixmap(self.get_pixmap())
@@ -268,7 +272,7 @@ class ImageDropMixin(object):  # {{{
         if not pmap.isNull():
             self.set_pixmap(pmap)
             self.cover_changed.emit(
-                    pixmap_to_data(pmap))
+                    pixmap_to_data(pmap, quality=100))
 # }}}
 
 class ImageView(QWidget, ImageDropMixin):  # {{{
@@ -276,19 +280,35 @@ class ImageView(QWidget, ImageDropMixin):  # {{{
     BORDER_WIDTH = 1
     cover_changed = pyqtSignal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, show_size_pref_name=None, default_show_size=False):
         QWidget.__init__(self, parent)
+        self.show_size_pref_name = ('show_size_on_cover_' + show_size_pref_name) if show_size_pref_name else None
         self._pixmap = QPixmap(self)
         self.setMinimumSize(QSize(150, 200))
         ImageDropMixin.__init__(self)
         self.draw_border = True
         self.show_size = False
+        if self.show_size_pref_name:
+            self.show_size = gprefs.get(self.show_size_pref_name, default_show_size)
 
     def setPixmap(self, pixmap):
         if not isinstance(pixmap, QPixmap):
             raise TypeError('Must use a QPixmap')
         self._pixmap = pixmap
         self.updateGeometry()
+        self.update()
+
+    def build_context_menu(self):
+        m = ImageDropMixin.build_context_menu(self)
+        if self.show_size_pref_name:
+            text = _('Hide size in corner') if self.show_size else _('Show size in corner')
+            m.addAction(text, self.toggle_show_size)
+        return m
+
+    def toggle_show_size(self):
+        self.show_size ^= True
+        if self.show_size_pref_name:
+            gprefs[self.show_size_pref_name] = self.show_size
         self.update()
 
     def pixmap(self):
@@ -409,11 +429,11 @@ class LineEditECM(object):  # {{{
         action_title_case = case_menu.addAction(_('Title Case'))
         action_capitalize = case_menu.addAction(_('Capitalize'))
 
-        self.connect(action_upper_case, SIGNAL('triggered()'), self.upper_case)
-        self.connect(action_lower_case, SIGNAL('triggered()'), self.lower_case)
-        self.connect(action_swap_case, SIGNAL('triggered()'), self.swap_case)
-        self.connect(action_title_case, SIGNAL('triggered()'), self.title_case)
-        self.connect(action_capitalize, SIGNAL('triggered()'), self.capitalize)
+        action_upper_case.triggered[()].connect(self.upper_case)
+        action_lower_case.triggered[()].connect(self.lower_case)
+        action_swap_case.triggered[()].connect(self.swap_case)
+        action_title_case.triggered[()].connect(self.title_case)
+        action_capitalize.triggered[()].connect(self.capitalize)
 
         menu.addMenu(case_menu)
         menu.exec_(event.globalPos())
@@ -487,16 +507,12 @@ class CompleteLineEdit(EnLineEdit):  # {{{
         self.separator = sep
         self.space_before_sep = space_before_sep
 
-        self.connect(self, SIGNAL('textChanged(QString)'), self.text_changed)
+        self.textChanged.connect(self.text_changed)
 
         self.completer = ItemsCompleter(self, complete_items)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
 
-        self.connect(self,
-            SIGNAL('text_changed(PyQt_PyObject, PyQt_PyObject)'),
-            self.completer.update)
-        self.connect(self.completer, SIGNAL('activated(QString)'),
-            self.complete_text)
+        self.completer.activated[str].connect(self.complete_text)
 
         self.completer.setWidget(self)
 
@@ -520,9 +536,7 @@ class CompleteLineEdit(EnLineEdit):  # {{{
             if t1 != '':
                 text_items.append(t)
         text_items = list(set(text_items))
-
-        self.emit(SIGNAL('text_changed(PyQt_PyObject, PyQt_PyObject)'),
-            text_items, prefix)
+        self.completer.update(text_items, prefix)
 
     def complete_text(self, text):
         cursor_pos = self.cursorPosition()
@@ -927,14 +941,15 @@ class SplitterHandle(QSplitterHandle):
 
 class LayoutButton(QToolButton):
 
-    def __init__(self, icon, text, splitter, parent=None, shortcut=None):
+    def __init__(self, icon, text, splitter=None, parent=None, shortcut=None):
         QToolButton.__init__(self, parent)
         self.label = text
         self.setIcon(QIcon(icon))
         self.setCheckable(True)
 
         self.splitter = splitter
-        splitter.state_changed.connect(self.update_state)
+        if splitter is not None:
+            splitter.state_changed.connect(self.update_state)
         self.setCursor(Qt.PointingHandCursor)
         self.shortcut = ''
         if shortcut:
@@ -942,14 +957,13 @@ class LayoutButton(QToolButton):
 
     def set_state_to_show(self, *args):
         self.setChecked(False)
-        label =_('Show')
-        self.setText(label + ' ' + self.label + u' (%s)'%self.shortcut)
+        self.setText(_('Show %(label)s [%(shortcut)s]')%dict(label=self.label, shortcut=self.shortcut))
         self.setToolTip(self.text())
         self.setStatusTip(self.text())
 
     def set_state_to_hide(self, *args):
         self.setChecked(True)
-        self.setText(_('Hide %(label)s %(shortcut)s')%dict(
+        self.setText(_('Hide %(label)s [%(shortcut)s]')%dict(
             label=self.label, shortcut=self.shortcut))
         self.setToolTip(self.text())
         self.setStatusTip(self.text())

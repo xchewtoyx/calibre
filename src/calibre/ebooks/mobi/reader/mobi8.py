@@ -20,7 +20,7 @@ from calibre.ebooks.mobi.reader.ncx import read_ncx, build_toc
 from calibre.ebooks.mobi.reader.markup import expand_mobi8_markup
 from calibre.ebooks.metadata.opf2 import Guide, OPFCreator
 from calibre.ebooks.metadata.toc import TOC
-from calibre.ebooks.mobi.utils import read_font_record
+from calibre.ebooks.mobi.utils import read_font_record, read_resc_record
 from calibre.ebooks.oeb.parse_utils import parse_html
 from calibre.ebooks.oeb.base import XPath, XHTML, xml2text
 from calibre.utils.imghdr import what
@@ -61,10 +61,12 @@ def reverse_tag_iter(block):
 
 class Mobi8Reader(object):
 
-    def __init__(self, mobi6_reader, log):
+    def __init__(self, mobi6_reader, log, for_tweak=False):
+        self.for_tweak = for_tweak
         self.mobi6_reader, self.log = mobi6_reader, log
         self.header = mobi6_reader.book_header
         self.encrypted_fonts = []
+        self.resc_data = {}
 
     def __call__(self):
         self.mobi6_reader.check_for_drm()
@@ -138,7 +140,7 @@ class Mobi8Reader(object):
 
             for i, ref_type in enumerate(table.iterkeys()):
                 tag_map = table[ref_type]
-                 # ref_type, ref_title, div/frag number
+                # ref_type, ref_title, div/frag number
                 title = cncx[tag_map[1][0]]
                 fileno = None
                 if 3 in tag_map.keys():
@@ -192,7 +194,7 @@ class Mobi8Reader(object):
                     if not inspos_warned:
                         self.log.warn(
                             'The div table for %s has incorrect insert '
-                                'positions. Calculating manually.'%skelname)
+                            'positions. Calculating manually.'%skelname)
                         inspos_warned = True
                     bp, ep = locate_beg_end_of_tag(skeleton, aidtext if
                         isinstance(aidtext, bytes) else aidtext.encode('utf-8'))
@@ -203,6 +205,11 @@ class Mobi8Reader(object):
                 baseptr = baseptr + length
                 divptr += 1
             self.parts.append(skeleton)
+            if divcnt < 1:
+                # Empty file
+                import uuid
+                aidtext = str(uuid.uuid4())
+                filename = aidtext + '.html'
             self.partinfo.append(Part(skelnum, 'text', filename, skelpos,
                 baseptr, aidtext))
 
@@ -380,6 +387,7 @@ class Mobi8Reader(object):
         return build_toc(index_entries)
 
     def extract_resources(self):
+        from calibre.ebooks.mobi.writer2.resources import PLACEHOLDER_GIF
         resource_map = []
         for x in ('fonts', 'images'):
             os.mkdir(x)
@@ -389,9 +397,11 @@ class Mobi8Reader(object):
             data = sec[0]
             typ = data[:4]
             href = None
-            if typ in {b'FLIS', b'FCIS', b'SRCS', b'\xe9\x8e\r\n',
-                    b'RESC', b'BOUN', b'FDST', b'DATP', b'AUDI', b'VIDE'}:
+            if typ in {b'FLIS', b'FCIS', b'SRCS', b'\xe9\x8e\r\n', b'BOUN',
+                       b'FDST', b'DATP', b'AUDI', b'VIDE'}:
                 pass  # Ignore these records
+            elif typ == b'RESC':
+                self.resc_data = read_resc_record(data)
             elif typ == b'FONT':
                 font = read_font_record(data)
                 href = "fonts/%05d.%s" % (fname_idx, font['ext'])
@@ -406,16 +416,17 @@ class Mobi8Reader(object):
                 if font['encrypted']:
                     self.encrypted_fonts.append(href)
             else:
-                imgtype = what(None, data)
-                if imgtype is None:
-                    from calibre.utils.magick.draw import identify_data
-                    try:
-                        imgtype = identify_data(data)[2]
-                    except Exception:
-                        imgtype = 'unknown'
-                href = 'images/%05d.%s'%(fname_idx, imgtype)
-                with open(href.replace('/', os.sep), 'wb') as f:
-                    f.write(data)
+                if not (len(data) == len(PLACEHOLDER_GIF) and data == PLACEHOLDER_GIF):
+                    imgtype = what(None, data)
+                    if imgtype is None:
+                        from calibre.utils.magick.draw import identify_data
+                        try:
+                            imgtype = identify_data(data)[2]
+                        except Exception:
+                            imgtype = 'unknown'
+                    href = 'images/%05d.%s'%(fname_idx, imgtype)
+                    with open(href.replace('/', os.sep), 'wb') as f:
+                        f.write(data)
 
             resource_map.append(href)
 
@@ -449,9 +460,29 @@ class Mobi8Reader(object):
         def exclude(path):
             return os.path.basename(path) == 'debug-raw.html'
 
+        # If there are no images then the azw3 input plugin dumps all
+        # binary records as .unknown images, remove them
+        if self.for_tweak and os.path.exists('images') and os.path.isdir('images'):
+            files = os.listdir('images')
+            unknown = [x for x in files if x.endswith('.unknown')]
+            if len(files) == len(unknown):
+                [os.remove('images/'+f) for f in files]
+
+        if self.for_tweak:
+            try:
+                os.remove('debug-raw.html')
+            except:
+                pass
+
         opf.create_manifest_from_files_in([os.getcwdu()], exclude=exclude)
+        for entry in opf.manifest:
+            if entry.mime_type == 'text/html':
+                entry.mime_type = 'application/xhtml+xml'
         opf.create_spine(spine)
         opf.set_toc(toc)
+        ppd = self.resc_data.get('page-progression-direction', None)
+        if ppd:
+            opf.page_progression_direction = ppd
 
         with open('metadata.opf', 'wb') as of, open('toc.ncx', 'wb') as ncx:
             opf.render(of, ncx, 'toc.ncx')
@@ -523,4 +554,3 @@ class Mobi8Reader(object):
                 parent.add_item(href, frag, text)
                 current_depth = depth
         return ans
-

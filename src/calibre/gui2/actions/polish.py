@@ -45,6 +45,7 @@ class Polish(QDialog):  # {{{
                   ORIGINAL_* format before running it.</p>''')
             ),
 
+            'embed':_('<h3>Embed referenced fonts</h3>%s')%HELP['embed'],
             'subset':_('<h3>Subsetting fonts</h3>%s')%HELP['subset'],
 
             'smarten_punctuation':
@@ -58,13 +59,14 @@ class Polish(QDialog):  # {{{
                          ' formats are not capable of supporting all the'
                          ' metadata in calibre.</p><p>There is a separate option to'
                          ' update the cover.</p>'),
-            'do_cover': _('<p>Update the covers in the ebook files to match the'
+            'do_cover': _('<h3>Update cover</h3><p>Update the covers in the ebook files to match the'
                         ' current cover in the calibre library.</p>'
                         '<p>If the ebook file does not have'
                         ' an identifiable cover, a new cover is inserted.</p>'
                         ),
             'jacket':_('<h3>Book Jacket</h3>%s')%HELP['jacket'],
             'remove_jacket':_('<h3>Remove Book Jacket</h3>%s')%HELP['remove_jacket'],
+            'remove_unused_css':_('<h3>Remove unused CSS rules</h3>%s')%HELP['remove_unused_css'],
         }
 
         self.l = l = QGridLayout()
@@ -75,12 +77,14 @@ class Polish(QDialog):  # {{{
 
         count = 0
         self.all_actions = OrderedDict([
+            ('embed', _('&Embed all referenced fonts')),
             ('subset', _('&Subset all embedded fonts')),
             ('smarten_punctuation', _('Smarten &punctuation')),
             ('metadata', _('Update &metadata in the book files')),
             ('do_cover', _('Update the &cover in the book files')),
             ('jacket', _('Add metadata as a "book &jacket" page')),
             ('remove_jacket', _('&Remove a previously inserted book jacket')),
+            ('remove_unused_css', _('Remove &unused CSS rules from the book')),
         ])
         prefs = gprefs.get('polishing_settings', {})
         for name, text in self.all_actions.iteritems():
@@ -332,7 +336,7 @@ class Report(QDialog):  # {{{
             self.show_next()
 
     def show_report(self, book_title, book_id, fmts, job, report):
-        from calibre.ebooks.markdown.markdown import markdown
+        from calibre.ebooks.markdown import markdown
         self.current_log = job.details
         self.setWindowTitle(_('Polishing of %s')%book_title)
         self.view.setText(markdown('# %s\n\n'%book_title + report,
@@ -428,7 +432,20 @@ class PolishAction(InterfaceAction):
             return None
         db = self.gui.library_view.model().db
         ans = (db.id(r) for r in rows)
-        return self.get_supported_books(ans)
+        ans = self.get_supported_books(ans)
+        for fmts in ans.itervalues():
+            for x in fmts:
+                if x.startswith('ORIGINAL_'):
+                    from calibre.gui2.dialogs.confirm_delete import confirm
+                    if not confirm(_(
+                            'One of the books you are polishing has an {0} format.'
+                            ' Polishing will use this as the source and overwrite'
+                            ' any existing {1} format. Are you sure you want to proceed?').format(
+                                x, x[len('ORIGINAL_'):]), 'confirm_original_polish', title=_('Are you sure?'),
+                                   confirm_msg=_('Ask for this confirmation again')):
+                        return {}
+                    break
+        return ans
 
     def get_supported_books(self, book_ids):
         from calibre.ebooks.oeb.polish.main import SUPPORTED
@@ -485,7 +502,7 @@ class PolishAction(InterfaceAction):
                 db.save_original_format(book_id, fmt, notify=False)
             with open(path, 'rb') as f:
                 db.add_format(book_id, fmt, f, index_is_id=True)
-        self.gui.status_bar.show_message(job.description + (' completed'), 2000)
+        self.gui.status_bar.show_message(job.description + _(' completed'), 2000)
         try:
             shutil.rmtree(base)
             parent = os.path.dirname(base)

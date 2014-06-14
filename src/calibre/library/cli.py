@@ -11,13 +11,15 @@ import sys, os, cStringIO, re
 import unicodedata
 from textwrap import TextWrapper
 
-from calibre import preferred_encoding, prints, isbytestring
+from calibre import preferred_encoding, prints, isbytestring, patheq
+from calibre.constants import iswindows
+from calibre.db.legacy import LibraryDatabase
 from calibre.utils.config import OptionParser, prefs, tweaks
 from calibre.ebooks.metadata.meta import get_metadata
 from calibre.ebooks.metadata.book.base import field_from_string
-from calibre.library.database2 import LibraryDatabase2
 from calibre.ebooks.metadata.opf2 import OPFCreator, OPF
 from calibre.utils.date import isoformat
+from calibre.utils.localization import canonicalize_lang
 
 FIELDS = set(['title', 'authors', 'author_sort', 'publisher', 'rating',
     'timestamp', 'size', 'tags', 'comments', 'series', 'series_index',
@@ -62,7 +64,7 @@ def get_db(dbpath, options):
     dbpath = os.path.abspath(dbpath)
     if options.dont_notify_gui:
         do_notify = False
-    return LibraryDatabase2(dbpath)
+    return LibraryDatabase(dbpath)
 
 def do_list(db, fields, afields, sort_by, ascending, search_text, line_width, separator,
             prefix, limit, subtitle='Books in the calibre database'):
@@ -71,7 +73,7 @@ def do_list(db, fields, afields, sort_by, ascending, search_text, line_width, se
         db.sort(sort_by, ascending)
     if search_text:
         db.search(search_text)
-    data = db.get_data_as_dict(prefix, authors_as_string=True)
+    data = db.get_data_as_dict(prefix, authors_as_string=True, convert_to_local_tz=False)
     if limit > -1:
         data = data[:limit]
     fields = ['id'] + fields
@@ -130,11 +132,11 @@ def do_list(db, fields, afields, sort_by, ascending, search_text, line_width, se
     with ColoredStream(sys.stdout, fg='green'):
         print ''.join(titles)
 
-    wrappers = map(lambda x: TextWrapper(x-1), widths)
+    wrappers = [TextWrapper(x - 1).wrap if x > 1 else lambda y: y for x in widths]
     o = cStringIO.StringIO()
 
     for record in data:
-        text = [wrappers[i].wrap(unicode(record[field])) for i, field in enumerate(fields)]
+        text = [wrappers[i](unicode(record[field])) for i, field in enumerate(fields)]
         lines = max(map(len, text))
         for l in range(lines):
             for i, field in enumerate(text):
@@ -196,17 +198,20 @@ def command_list(args, dbpath):
             afields.add('*'+f)
             if data['datatype'] == 'series':
                 afields.add('*'+f+'_index')
-    fields = [str(f.strip().lower()) for f in opts.fields.split(',')]
-    if 'all' in fields:
-        fields = sorted(list(afields))
-    if not set(fields).issubset(afields):
-        parser.print_help()
-        print
-        prints(_('Invalid fields. Available fields:'),
-                ','.join(sorted(afields)), file=sys.stderr)
-        return 1
+    if opts.fields.strip():
+        fields = [str(f.strip().lower()) for f in opts.fields.split(',')]
+        if 'all' in fields:
+            fields = sorted(list(afields))
+        if not set(fields).issubset(afields):
+            parser.print_help()
+            print
+            prints(_('Invalid fields. Available fields:'),
+                    ','.join(sorted(afields)), file=sys.stderr)
+            return 1
+    else:
+        fields = []
 
-    if not opts.sort_by in afields and opts.sort_by is not None:
+    if opts.sort_by not in afields and opts.sort_by is not None:
         parser.print_help()
         print
         prints(_('Invalid sort field. Available fields:'), ','.join(afields),
@@ -225,9 +230,9 @@ class DevNull(object):
 NULL = DevNull()
 
 def do_add(db, paths, one_book_per_directory, recurse, add_duplicates, otitle,
-        oauthors, oisbn, otags, oseries, oseries_index, ocover):
+        oauthors, oisbn, otags, oseries, oseries_index, ocover, olanguages):
     orig = sys.stdout
-    #sys.stdout = NULL
+    # sys.stdout = NULL
     try:
         files, dirs = [], []
         for path in paths:
@@ -252,7 +257,7 @@ def do_add(db, paths, one_book_per_directory, recurse, add_duplicates, otitle,
                 mi.title = os.path.splitext(os.path.basename(book))[0]
             if not mi.authors:
                 mi.authors = [_('Unknown')]
-            for x in ('title', 'authors', 'isbn', 'tags', 'series'):
+            for x in ('title', 'authors', 'isbn', 'tags', 'series', 'languages'):
                 val = locals()['o'+x]
                 if val:
                     setattr(mi, x, val)
@@ -350,10 +355,12 @@ the directory related options below.
             help=_('Set the series number of the added book(s)'))
     parser.add_option('-c', '--cover', default=None,
             help=_('Path to the cover to use for the added book'))
+    parser.add_option('-l', '--languages', default=None,
+            help=_('A comma separated list of languages (best to use ISO639 language codes, though some language names may also be recognized)'))
 
     return parser
 
-def do_add_empty(db, title, authors, isbn, tags, series, series_index, cover):
+def do_add_empty(db, title, authors, isbn, tags, series, series_index, cover, languages):
     from calibre.ebooks.metadata import MetaInformation
     mi = MetaInformation(None)
     if title is not None:
@@ -368,6 +375,8 @@ def do_add_empty(db, title, authors, isbn, tags, series, series_index, cover):
         mi.series, mi.series_index = series, series_index
     if cover:
         mi.cover = cover
+    if languages:
+        mi.languages = languages
     book_id = db.import_book(mi, [])
     write_dirtied(db)
     prints(_('Added book ids: %s')%book_id)
@@ -379,9 +388,11 @@ def command_add(args, dbpath):
     opts, args = parser.parse_args(sys.argv[:1] + args)
     aut = string_to_authors(opts.authors) if opts.authors else []
     tags = [x.strip() for x in opts.tags.split(',')] if opts.tags else []
+    lcodes = [canonicalize_lang(x) for x in (opts.languages or '').split(',')]
+    lcodes = [x for x in lcodes if x]
     if opts.empty:
         do_add_empty(get_db(dbpath, opts), opts.title, aut, opts.isbn, tags,
-                opts.series, opts.series_index, opts.cover)
+                opts.series, opts.series_index, opts.cover, lcodes)
         return 0
     if len(args) < 2:
         parser.print_help()
@@ -390,19 +401,22 @@ def command_add(args, dbpath):
         return 1
     do_add(get_db(dbpath, opts), args[1:], opts.one_book_per_directory,
             opts.recurse, opts.duplicates, opts.title, aut, opts.isbn,
-            tags, opts.series, opts.series_index, opts.cover)
+            tags, opts.series, opts.series_index, opts.cover, lcodes)
     return 0
 
 def do_remove(db, ids):
+    book_ids = set()
     for x in ids:
         if isinstance(x, int):
-            db.delete_book(x)
+            book_ids.add(x)
         else:
-            for y in x:
-                db.delete_book(y)
+            book_ids |= set(x)
 
+    db.new_api.remove_books(book_ids)
     db.clean()
     send_message()
+    from calibre.db.delete_service import delete_service
+    delete_service().wait()
 
 def remove_option_parser():
     return get_parser(_(
@@ -476,6 +490,8 @@ def command_add_format(args, dbpath):
 def do_remove_format(db, id, fmt):
     db.remove_format(id, fmt, index_is_id=True)
     send_message()
+    from calibre.db.delete_service import delete_service
+    delete_service().wait()
 
 def remove_format_option_parser():
     return get_parser(_(
@@ -541,19 +557,17 @@ def do_set_metadata(db, id, stream):
     db.set_metadata(id, mi)
 
 def set_metadata_option_parser():
-    return get_parser(_(
+    parser = get_parser(_(
 '''
-%prog set_metadata [options] id /path/to/metadata.opf
+%prog set_metadata [options] id [/path/to/metadata.opf]
 
 Set the metadata stored in the calibre database for the book identified by id
 from the OPF file metadata.opf. id is an id number from the list command. You
 can get a quick feel for the OPF format by using the --as-opf switch to the
 show_metadata command. You can also set the metadata of individual fields with
-the --field option.
+the --field option. If you use the --field option, there is no need to specify
+an OPF file.
 '''))
-
-def command_set_metadata(args, dbpath):
-    parser = set_metadata_option_parser()
     parser.add_option('-f', '--field', action='append', default=[], help=_(
         'The field to set. Format is field_name:value, for example: '
         '{0} tags:tag1,tag2. Use {1} to get a list of all field names. You '
@@ -567,6 +581,10 @@ def command_set_metadata(args, dbpath):
     parser.add_option('-l', '--list-fields', action='store_true',
         default=False, help=_('List the metadata field names that can be used'
         ' with the --field option'))
+    return parser
+
+def command_set_metadata(args, dbpath):
+    parser = set_metadata_option_parser()
     opts, args = parser.parse_args(sys.argv[0:1]+args)
     db = get_db(dbpath, opts)
 
@@ -624,18 +642,35 @@ def command_set_metadata(args, dbpath):
 
     if opts.field:
         fields = {k:v for k, v in fields()}
+        fields['title_sort'] = fields['sort']
         vals = {}
         for x in opts.field:
             field, val = x.partition(':')[::2]
+            if field == 'sort':
+                field = 'title_sort'
             if field not in fields:
                 print >>sys.stderr, _('%s is not a known field'%field)
                 return 1
             val = field_from_string(field, val, fields[field])
             vals[field] = val
         mi = db.get_metadata(book_id, index_is_id=True, get_cover=False)
-        for field, val in sorted(vals.iteritems(), key=lambda k: 1 if
-                k[0].endswith('_index') else 0):
-            mi.set(field, val)
+        for field, val in sorted(  # ensure series_index fields are set last
+                vals.iteritems(), key=lambda k: 1 if k[0].endswith('_index') else 0):
+            if field.endswith('_index'):
+                try:
+                    val = float(val)
+                except Exception:
+                    print >>sys.stderr, 'The value %r is not a valid series index' % val
+                    raise SystemExit(1)
+                sname = mi.get(field[:-6])
+                if not sname:
+                    print >>sys.stderr, 'Cannot set index for series before setting the series name'
+                    raise SystemExit(1)
+                mi.set(field[:-6], sname, extra=val)
+                if field == 'series_index':
+                    mi.series_index = val  # extra has no effect for the builtin series field
+            else:
+                mi.set(field, val)
         db.set_metadata(book_id, mi, force_changes=True)
     db.clean()
     do_show_metadata(db, book_id, False)
@@ -709,7 +744,7 @@ def command_export(args, dbpath):
 
 def do_add_custom_column(db, label, name, datatype, is_multiple, display):
     num = db.create_custom_column(label, name, datatype, is_multiple, display=display)
-    prints('Custom column created with id: %d'%num)
+    prints('Custom column created with id: %s'%num)
 
 def add_custom_column_option_parser():
     from calibre.library.custom_columns import CustomColumns
@@ -788,16 +823,12 @@ def catalog_option_parser(args):
 
         return plugin
 
-    def print_help(parser, log):
-        help = parser.format_help().encode(preferred_encoding, 'replace')
-        log(help)
-
     def validate_command_line(parser, args, log):
         # calibredb catalog path/to/destination.[epub|csv|xml|...] [options]
 
         # Validate form
         if not len(args) or args[0].startswith('-'):
-            print_help(parser, log)
+            parser.print_help()
             log.error("\n\nYou must specify a catalog output file of the form 'path/to/destination.extension'\n"
             "To review options for an output format, type 'calibredb catalog <.extension> --help'\n"
             "For example, 'calibredb catalog .xml --help'\n")
@@ -807,8 +838,8 @@ def catalog_option_parser(args):
         output = os.path.abspath(args[0])
         file_extension = output[output.rfind('.') + 1:].lower()
 
-        if not file_extension in available_catalog_formats():
-            print_help(parser, log)
+        if file_extension not in available_catalog_formats():
+            parser.print_help()
             log.error("No catalog plugin available for extension '%s'.\n" % file_extension +
                       "Catalog plugins available for %s\n" % ', '.join(available_catalog_formats()))
             raise SystemExit(1)
@@ -1027,14 +1058,11 @@ def command_saved_searches(args, dbpath):
         print
         prints(_('Error: You must specify an action (add|remove|list)'), file=sys.stderr)
         return 1
-    from calibre.utils.search_query_parser import saved_searches
     db = get_db(dbpath, opts)
-    db
-    ss = saved_searches()
     if args[0] == 'list':
-        for name in ss.names():
+        for name in db.saved_search_names():
             prints(_('Name:'), name)
-            prints(_('Search string:'), ss.lookup(name))
+            prints(_('Search string:'), db.saved_search_lookup(name))
             print
     elif args[0] == 'add':
         if len(args) < 3:
@@ -1042,7 +1070,7 @@ def command_saved_searches(args, dbpath):
             print
             prints(_('Error: You must specify a name and a search string'), file=sys.stderr)
             return 1
-        ss.add(args[1], args[2])
+        db.saved_search_add(args[1], args[2])
         prints(args[1], _('added'))
     elif args[0] == 'remove':
         if len(args) < 2:
@@ -1050,7 +1078,7 @@ def command_saved_searches(args, dbpath):
             print
             prints(_('Error: You must specify a name'), file=sys.stderr)
             return 1
-        ss.delete(args[1])
+        db.saved_search_delete(args[1])
         prints(args[1], _('removed'))
     else:
         parser.print_help()
@@ -1103,7 +1131,7 @@ def command_backup_metadata(args, dbpath):
         dbpath = opts.library_path
     if isbytestring(dbpath):
         dbpath = dbpath.decode(preferred_encoding)
-    db = LibraryDatabase2(dbpath)
+    db = LibraryDatabase(dbpath)
     book_ids = None
     if opts.all:
         book_ids = db.all_ids()
@@ -1185,7 +1213,11 @@ def command_check_library(args, dbpath):
             for i in list:
                 print '    %-40.40s - %-40.40s'%(i[0], i[1])
 
-    db = LibraryDatabase2(dbpath)
+    if not LibraryDatabase.exists_at(dbpath):
+        prints('No library found at', dbpath, file=sys.stderr)
+        raise SystemExit(1)
+
+    db = LibraryDatabase(dbpath)
     checker = CheckLibrary(dbpath, db)
     checker.scan_library(names, exts)
     for check in checks:
@@ -1213,7 +1245,6 @@ what is found in the OPF files.
     return parser
 
 def command_restore_database(args, dbpath):
-    from calibre.library.restore import Restore
     parser = restore_database_option_parser()
     opts, args = parser.parse_args(args)
     if len(args) != 0:
@@ -1241,6 +1272,7 @@ def command_restore_database(args, dbpath):
                 self.total = float(step)
             else:
                 prints(msg, '...', '%d%%'%int(100*(step/self.total)))
+    from calibre.db.restore import Restore
     r = Restore(dbpath, progress_callback=Progress())
     r.start()
     r.join()
@@ -1298,7 +1330,7 @@ def command_list_categories(args, dbpath):
     if isbytestring(dbpath):
         dbpath = dbpath.decode(preferred_encoding)
 
-    db = LibraryDatabase2(dbpath)
+    db = LibraryDatabase(dbpath)
     category_data = db.get_categories()
     data = []
     report_on = [c.strip() for c in opts.report.split(',') if c.strip()]
@@ -1382,12 +1414,56 @@ def command_list_categories(args, dbpath):
     else:
         do_list()
 
+    return parser
+
+def clone_option_parser():
+    return get_parser(_(
+    '''\
+%prog clone path/to/new/library
+
+Create a clone of the current library. This creates a new, empty library that has all the
+same custom columns, virtual libraries and other settings as the current library.
+
+The cloned library will contain no books. If you want to create a full duplicate, including
+all books, then simply use your filesystem tools to copy the library folder.
+    '''))
+
+def command_clone(args, dbpath):
+    parser = clone_option_parser()
+    opts, args = parser.parse_args(args)
+    if len(args) < 1:
+        parser.print_help()
+        print
+        prints(_('Error: You must specify the path to the cloned library'))
+        return 1
+    db = get_db(dbpath, opts)
+    loc = args[0]
+    if not os.path.exists(loc):
+        os.makedirs(loc)
+    loc = os.path.abspath(loc)
+
+    if patheq(loc, db.library_path):
+        prints(_('The location for the new library is the same as the current library'))
+        return 1
+    empty = not os.listdir(loc)
+    if not empty:
+        prints(_('%s is not empty. You must choose an empty directory for the new library.') % loc)
+        return 1
+    if iswindows and len(loc) > LibraryDatabase.WINDOWS_LIBRARY_PATH_LIMIT:
+        prints(_('Path to library too long. Must be less than'
+                    ' %d characters.')%LibraryDatabase.WINDOWS_LIBRARY_PATH_LIMIT)
+        return 1
+    dbprefs = dict(db.prefs)
+    db.close()
+    LibraryDatabase(loc, default_prefs=dbprefs)
+
 
 COMMANDS = ('list', 'add', 'remove', 'add_format', 'remove_format',
             'show_metadata', 'set_metadata', 'export', 'catalog',
             'saved_searches', 'add_custom_column', 'custom_columns',
             'remove_custom_column', 'set_custom', 'restore_database',
-            'check_library', 'list_categories', 'backup_metadata')
+            'check_library', 'list_categories', 'backup_metadata',
+            'clone')
 
 
 def option_parser():
@@ -1425,3 +1501,4 @@ def main(args=sys.argv):
 
 if __name__ == '__main__':
     sys.exit(main())
+

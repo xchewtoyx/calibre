@@ -24,6 +24,23 @@ from calibre import prints, guess_type
 from calibre.utils.cleantext import clean_ascii_chars, clean_xml_chars
 from calibre.utils.config import tweaks
 
+pretty_print_opf = False
+
+class PrettyPrint(object):
+    def __enter__(self):
+        global pretty_print_opf
+        pretty_print_opf = True
+
+    def __exit__(self, *args):
+        global pretty_print_opf
+        pretty_print_opf = False
+pretty_print = PrettyPrint()
+
+def _pretty_print(root):
+    from calibre.ebooks.oeb.polish.pretty import pretty_opf, pretty_xml_tree
+    pretty_opf(root)
+    pretty_xml_tree(root)
+
 class Resource(object):  # {{{
     '''
     Represents a resource (usually a file on the filesystem or a URL pointing
@@ -518,7 +535,6 @@ class OPF(object):  # {{{
     spine_path      = XPath('descendant::*[re:match(name(), "spine", "i")]/*[re:match(name(), "itemref", "i")]')
     guide_path      = XPath('descendant::*[re:match(name(), "guide", "i")]/*[re:match(name(), "reference", "i")]')
 
-    title           = MetadataField('title', formatter=lambda x: re.sub(r'\s+', ' ', x))
     publisher       = MetadataField('publisher')
     comments        = MetadataField('description')
     category        = MetadataField('type')
@@ -554,6 +570,8 @@ class OPF(object):  # {{{
                 resolve_entities=True, assume_utf8=True)
         raw = raw[raw.find('<'):]
         self.root     = etree.fromstring(raw, self.PARSER)
+        if self.root is None:
+            raise ValueError('Not an OPF file')
         try:
             self.package_version = float(self.root.get('version', None))
         except (AttributeError, TypeError, ValueError):
@@ -603,7 +621,7 @@ class OPF(object):  # {{{
                 import traceback
                 traceback.print_exc()
                 continue
-            self._user_metadata_ = temp.get_all_user_metadata(True)
+        self._user_metadata_ = temp.get_all_user_metadata(True)
 
     def to_book_metadata(self):
         ans = MetaInformation(self)
@@ -780,6 +798,31 @@ class OPF(object):  # {{{
             item.set('href', get_href(item))
 
     @dynamic_property
+    def title(self):
+        # TODO: Add support for EPUB 3 refinements
+
+        def fget(self):
+            for elem in self.title_path(self.metadata):
+                title = self.get_text(elem)
+                if title and title.strip():
+                    return re.sub(r'\s+', ' ', title.strip())
+
+        def fset(self, val):
+            val = (val or '').strip()
+            titles = self.title_path(self.metadata)
+            if self.package_version < 3:
+                # EPUB 3 allows multiple title elements containing sub-titles,
+                # series and other things. We all loooove EPUB 3.
+                for title in titles:
+                    title.getparent().remove(title)
+                titles = ()
+            if val:
+                title = titles[0] if titles else self.create_metadata_element('title')
+                title.text = re.sub(r'\s+', ' ', unicode(val))
+
+        return property(fget=fget, fset=fset)
+
+    @dynamic_property
     def authors(self):
 
         def fget(self):
@@ -933,6 +976,33 @@ class OPF(object):  # {{{
                         identifiers['isbn'] = val
         return identifiers
 
+    def set_identifiers(self, identifiers):
+        identifiers = identifiers.copy()
+        uuid_id = None
+        for attr in self.root.attrib:
+            if attr.endswith('unique-identifier'):
+                uuid_id = self.root.attrib[attr]
+                break
+
+        for x in self.XPath(
+            'descendant::*[local-name() = "identifier"]')(
+                    self.metadata):
+            xid = x.get('id', None)
+            is_package_identifier = uuid_id is not None and uuid_id == xid
+            typ = {val for attr, val in x.attrib.iteritems() if attr.endswith('scheme')}
+            if is_package_identifier:
+                typ = tuple(typ)
+                if typ and typ[0].lower() in identifiers:
+                    self.set_text(x, identifiers.pop(typ[0].lower()))
+                continue
+            if typ and not (typ & {'calibre', 'uuid'}):
+                x.getparent().remove(x)
+
+        for typ, val in identifiers.iteritems():
+            attrib = {'{%s}scheme'%self.NAMESPACES['opf']: typ.upper()}
+            self.set_text(self.create_metadata_element(
+                'identifier', attrib=attrib), unicode(val))
+
     @dynamic_property
     def application_id(self):
 
@@ -1033,7 +1103,7 @@ class OPF(object):  # {{{
             yield item
 
     @property
-    def unique_identifier(self):
+    def raw_unique_identifier(self):
         uuid_elem = None
         for attr in self.root.attrib:
             if attr.endswith('unique-identifier'):
@@ -1045,7 +1115,21 @@ class OPF(object):  # {{{
                 for m in matches:
                     raw = m.text
                     if raw:
-                        return raw.rpartition(':')[-1]
+                        return raw
+
+    @property
+    def unique_identifier(self):
+        raw = self.raw_unique_identifier
+        if raw:
+            return raw.rpartition(':')[-1]
+
+    @property
+    def page_progression_direction(self):
+        spine = self.XPath('descendant::*[re:match(name(), "spine", "i")][1]')(self.root)
+        if spine:
+            for k, v in spine[0].attrib.iteritems():
+                if k == 'page-progression-direction' or k.endswith('}page-progression-direction'):
+                    return v
 
     def guess_cover(self):
         '''
@@ -1075,12 +1159,12 @@ class OPF(object):  # {{{
             for item in self.itermanifest():
                 if item.get('id', None) == cover_id:
                     mt = item.get('media-type', '')
-                    if 'xml' not in mt:
+                    if mt and 'xml' not in mt and 'html' not in mt:
                         return item.get('href', None)
             for item in self.itermanifest():
                 if item.get('href', None) == cover_id:
                     mt = item.get('media-type', '')
-                    if mt.startswith('image/'):
+                    if mt and mt.startswith('image/'):
                         return item.get('href', None)
 
     @dynamic_property
@@ -1122,10 +1206,7 @@ class OPF(object):  # {{{
     def get_metadata_element(self, name):
         matches = self.metadata_elem_path(self.metadata, name=name)
         if matches:
-            num = -1
-            if self.package_version >= 3 and name == 'title':
-                num = 0
-            return matches[num]
+            return matches[-1]
 
     def create_metadata_element(self, name, attrib=None, is_dc=True):
         if is_dc:
@@ -1152,6 +1233,8 @@ class OPF(object):  # {{{
                 a['content'] = c
 
         self.write_user_metadata()
+        if pretty_print_opf:
+            _pretty_print(self.root)
         raw = etree.tostring(self.root, encoding=encoding, pretty_print=True)
         if not raw.lstrip().startswith('<?xml '):
             raw = '<?xml version="1.0"  encoding="%s"?>\n'%encoding.upper()+raw
@@ -1185,6 +1268,7 @@ class OPFCreator(Metadata):
         '''
         Metadata.__init__(self, title='', other=other)
         self.base_path = os.path.abspath(base_path)
+        self.page_progression_direction = None
         if self.application_id is None:
             self.application_id = str(uuid.uuid4())
         if not isinstance(self.toc, TOC):
@@ -1356,6 +1440,8 @@ class OPFCreator(Metadata):
         spine = E.spine()
         if self.toc is not None:
             spine.set('toc', 'ncx')
+        if self.page_progression_direction is not None:
+            spine.set('page-progression-direction', self.page_progression_direction)
         if self.spine is not None:
             for ref in self.spine:
                 if ref.id is not None:
@@ -1412,7 +1498,7 @@ def metadata_to_opf(mi, as_string=True, default_lang=None):
 
     root = etree.fromstring(textwrap.dedent(
     '''
-    <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uuid_id">
+    <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uuid_id" version="2.0">
         <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
             <dc:identifier opf:scheme="%(a)s" id="%(a)s_id">%(id)s</dc:identifier>
             <dc:identifier opf:scheme="uuid" id="uuid_id">%(uuid)s</dc:identifier>
@@ -1501,6 +1587,9 @@ def metadata_to_opf(mi, as_string=True, default_lang=None):
                 attrib={'type':'cover', 'title':_('Cover'), 'href':mi.cover})
         r.tail = '\n' +(' '*4)
         guide.append(r)
+    if pretty_print_opf:
+        _pretty_print(root)
+
     return etree.tostring(root, pretty_print=True, encoding='utf-8',
             xml_declaration=True) if as_string else root
 

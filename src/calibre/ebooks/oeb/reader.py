@@ -15,7 +15,7 @@ from collections import defaultdict
 from lxml import etree
 
 from calibre.ebooks.oeb.base import OPF1_NS, OPF2_NS, OPF2_NSMAP, DC11_NS, \
-    DC_NSES, OPF, xml2text
+    DC_NSES, OPF, xml2text, XHTML_MIME
 from calibre.ebooks.oeb.base import OEB_DOCS, OEB_STYLES, OEB_IMAGES, \
     PAGE_MAP_MIME, JPEG_MIME, NCX_MIME, SVG_MIME
 from calibre.ebooks.oeb.base import XMLDECL_RE, COLLAPSE_RE, \
@@ -113,10 +113,10 @@ class OEBReader(object):
                 self.logger.warn('OPF contains invalid HTML named entities')
             except etree.XMLSyntaxError:
                 data = re.sub(r'(?is)<tours>.+</tours>', '', data)
-                self.logger.warn('OPF contains invalid tours section')
                 data = data.replace('<dc-metadata>',
                     '<dc-metadata xmlns:dc="http://purl.org/metadata/dublin_core">')
                 opf = etree.fromstring(data)
+                self.logger.warn('OPF contains invalid tours section')
 
         ns = namespace(opf.tag)
         if ns not in ('', OPF1_NS, OPF2_NS):
@@ -127,7 +127,7 @@ class OEBReader(object):
     def _metadata_from_opf(self, opf):
         from calibre.ebooks.metadata.opf2 import OPF
         from calibre.ebooks.oeb.transforms.metadata import meta_info_to_oeb_metadata
-        stream = cStringIO.StringIO(etree.tostring(opf))
+        stream = cStringIO.StringIO(etree.tostring(opf, xml_declaration=True, encoding='utf-8'))
         mi = OPF(stream).to_book_metadata()
         if not mi.language:
             mi.language = get_lang().replace('_', '-')
@@ -325,11 +325,18 @@ class OEBReader(object):
             if item.media_type.lower() in OEB_DOCS and hasattr(item.data, 'xpath'):
                 spine.add(item, elem.get('linear'))
             else:
-                self.oeb.log.warn('The item %s is not a XML document.'
+                if hasattr(item.data, 'tag') and item.data.tag and item.data.tag.endswith('}html'):
+                    item.media_type = XHTML_MIME
+                    spine.add(item, elem.get('linear'))
+                else:
+                    self.oeb.log.warn('The item %s is not a XML document.'
                         ' Removing it from spine.'%item.href)
         if len(spine) == 0:
             raise OEBError("Spine is empty")
         self._spine_add_extra()
+        for val in xpath(opf, '/o2:package/o2:spine/@page-progression-direction'):
+            if val in {'ltr', 'rtl'}:
+                spine.page_progression_direction = val
 
     def _guide_from_opf(self, opf):
         guide = self.oeb.guide
